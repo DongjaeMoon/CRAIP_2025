@@ -15,23 +15,21 @@ class PathPlanningNode(Node):
     def __init__(self):
         super().__init__('path_planning_node')
 
-        # 맵 정보
         self.map_msg: OccupancyGrid = None
-        self.map_grid = None          # 2차원 numpy 배열 (height, width)
+        self.map_grid = None          
         self.resolution = None
         self.origin_x = None
         self.origin_y = None
         self.width = None
         self.height = None
 
-        # 포즈 정보
+    
         self.start_pose: PoseStamped = None   # /go1_pose
         self.goal_pose: PoseStamped = None    # /goal_pose
 
-        # 로봇 크기 (대략) - 맵에서 margin 줄 때 사용
+        # 로봇 크기
         self.robot_radius = 0.3  # meter
 
-        # 구독
         self.create_subscription(
             PoseStamped,
             '/go1_pose',
@@ -53,7 +51,6 @@ class PathPlanningNode(Node):
             10
         )
 
-        # 경로 발행
         self.path_pub = self.create_publisher(
             Path,
             '/local_path',
@@ -62,9 +59,6 @@ class PathPlanningNode(Node):
 
         self.get_logger().info('PathPlanningNode 초기화 완료 (/go1_pose, /goal_pose, /map 사용, /local_path 발행)')
 
-    # ==========================
-    # 콜백
-    # ==========================
 
     def start_callback(self, msg: PoseStamped):
         self.start_pose = msg
@@ -85,18 +79,15 @@ class PathPlanningNode(Node):
         data = np.array(msg.data, dtype=np.int16).reshape((self.height, self.width))
         self.map_grid = data
 
-        # 로봇 크기를 고려한 장애물 팽창 (margin_cells)
+        # 로봇 크기 고려 장애물 크게
         margin_cells = max(1, int(self.robot_radius / self.resolution))
         self.inflate_obstacles(margin_cells=margin_cells)
 
         self.get_logger().info(
-            f'맵 수신 및 팽창 완료 (width={self.width}, height={self.height}, resolution={self.resolution:.3f}, margin_cells={margin_cells})'
+            f'맵 수신 및 장애물 크기 보정 (width={self.width}, height={self.height}, resolution={self.resolution:.3f}, margin_cells={margin_cells})'
         )
 
-    # ==========================
-    # 맵 관련 함수
-    # ==========================
-
+  
     def inflate_obstacles(self, margin_cells: int):
         if self.map_grid is None:
             return
@@ -104,8 +95,7 @@ class PathPlanningNode(Node):
         grid = self.map_grid
         inflated = grid.copy()
 
-        obstacle_indices = np.argwhere(grid > 50)  # 50 이상을 장애물로 간주
-
+        obstacle_indices = np.argwhere(grid > 50)  # 50 이상을 장애물로
         for (r, c) in obstacle_indices:
             r_min = max(0, r - margin_cells)
             r_max = min(self.height - 1, r + margin_cells)
@@ -123,7 +113,7 @@ class PathPlanningNode(Node):
         gy = int(round((y - self.origin_y) / self.resolution))
 
         if 0 <= gx < self.width and 0 <= gy < self.height:
-            # numpy 인덱스는 [row, col] = [y, x]
+            # [row, col] = [y, x]
             return gy, gx
         else:
             return None
@@ -133,17 +123,14 @@ class PathPlanningNode(Node):
         y = r * self.resolution + self.origin_y
         return x, y
 
-    # ==========================
-    # 플래닝 트리거
-    # ==========================
-
+  
     def try_plan(self):
         if self.map_grid is None:
             return
         if self.start_pose is None or self.goal_pose is None:
             return
 
-        self.get_logger().info('경로 계획 시도 중...')
+        self.get_logger().info('경로 계획 중중중')
 
         start_rc = self.world_to_grid(
             self.start_pose.pose.position.x,
@@ -155,20 +142,20 @@ class PathPlanningNode(Node):
         )
 
         if start_rc is None or goal_rc is None:
-            self.get_logger().warn('시작 또는 목표가 맵 밖입니다.')
+            self.get_logger().warn('목표 맵 밖')
             return
 
-        # 1단계: A* 로 grid 상에서 경로 찾기
+        # A* 로 grid 상에서 경로 찾기
         path_rc = self.a_star(start_rc, goal_rc)
 
         if path_rc is None or len(path_rc) == 0:
-            self.get_logger().warn('A* 경로를 찾지 못했습니다.')
+            self.get_logger().warn('경로 없음')
             return
 
-        # grid 경로를 world 좌표 polyline 으로 변환
+        # grid 경로 --> world 좌표 polyline
         world_points = [self.grid_to_world(r, c) for (r, c) in path_rc]
 
-        # raw path (A* 결과)를 Path 메시지로 만들어둘 것 (fallback 용)
+        # path message
         raw_path_msg = Path()
         raw_path_msg.header.frame_id = 'map'
         raw_path_msg.header.stamp = self.get_clock().now().to_msg()
@@ -180,19 +167,17 @@ class PathPlanningNode(Node):
             pose.pose.position.y = float(y)
             raw_path_msg.poses.append(pose)
 
-        # 2단계: move_go1 스타일 spline 으로 부드러운 path 생성
-        # (경로 전체 길이 기준으로 포인트 개수 조절)
+      
         total_dist = 0.0
         for i in range(len(world_points) - 1):
             dx = world_points[i + 1][0] - world_points[i][0]
             dy = world_points[i + 1][1] - world_points[i][1]
             total_dist += math.hypot(dx, dy)
 
-        # 너무 작으면 기본값
+
         if total_dist < 0.1:
             total_dist = 0.1
 
-        # move_go1 과 비슷한 기준: PATH_DENSITY = 20
         PATH_DENSITY = 20.0
         MIN_POINTS = 60
         MAX_POINTS = 200
@@ -206,29 +191,26 @@ class PathPlanningNode(Node):
             num_points=num_points
         )
 
-        # 3단계: spline 경로가 충돌 없는지 확인
+        # collision checj
         if self.is_path_collision_free(smooth_path_msg):
             self.path_pub.publish(smooth_path_msg)
             self.get_logger().info(
-                f'부드러운 경로 발행 완료 (points={len(smooth_path_msg.poses)}, length={total_dist:.2f} m)'
+                f'smooth path (points={len(smooth_path_msg.poses)}, length={total_dist:.2f} m)'
             )
         else:
-            # spline 이 장애물을 통과하면 raw A* 경로를 사용
+
             self.path_pub.publish(raw_path_msg)
             self.get_logger().warn(
-                'spline 경로가 장애물과 충돌하여, A* raw 경로를 대신 사용합니다.'
+                'spline path not work
             )
 
-    # ==========================
-    # A* 알고리즘
-    # ==========================
-
+    
     def a_star(self, start_rc, goal_rc):
         sr, sc = start_rc
         gr, gc = goal_rc
 
         if self.map_grid[sr, sc] > 50 or self.map_grid[gr, gc] > 50:
-            self.get_logger().warn('시작 또는 목표가 장애물 위에 있습니다.')
+            self.get_logger().warn('out of map')
             return None
 
         open_heap = []
@@ -238,7 +220,7 @@ class PathPlanningNode(Node):
         g_score = {(sr, sc): 0.0}
         closed = set()
 
-        # 8방향 이웃
+
         neighbors = [
             (-1, 0), (1, 0),
             (0, -1), (0, 1),
@@ -256,7 +238,6 @@ class PathPlanningNode(Node):
             closed.add(current)
 
             if current == (gr, gc):
-                # 경로 복원
                 path = [current]
                 while current in came_from:
                     current = came_from[current]
@@ -270,7 +251,7 @@ class PathPlanningNode(Node):
 
                 if not (0 <= nr < self.height and 0 <= nc < self.width):
                     continue
-                # 장애물 또는 unknown(-1)은 통과 금지
+
                 if self.map_grid[nr, nc] > 50 or self.map_grid[nr, nc] < 0:
                     continue
 
@@ -285,22 +266,15 @@ class PathPlanningNode(Node):
 
         return None
 
-    # ==========================
-    # move_go1 스타일 spline 생성
-    # ==========================
+   
 
     def quaternion_to_yaw(self, q: Quaternion) -> float:
-        """
-        move_go1.py 에서 사용하던 yaw 추출 함수
-        """
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     def yaw_to_quaternion(self, yaw: float) -> Quaternion:
-        """
-        move_go1.py 에서 사용하던 yaw -> quaternion 변환
-        """
+       
         q = Quaternion()
         q.x = 0.0
         q.y = 0.0
@@ -311,11 +285,7 @@ class PathPlanningNode(Node):
     def generate_smooth_path_from_poses(self,
                                         start_pose: PoseStamped,
                                         goal_pose: PoseStamped,
-                                        num_points: int) -> Path:
-        """
-        move_go1.py 의 generate_smooth_path 를
-        start_pose, goal_pose 를 직접 받아서 쓰는 버전.
-        """
+        
         path = Path()
         path.header.frame_id = "map"
         path.header.stamp = self.get_clock().now().to_msg()
@@ -332,7 +302,7 @@ class PathPlanningNode(Node):
         z1 = goal_pose.pose.position.z
         yaw1 = self.quaternion_to_yaw(goal_pose.pose.orientation)
 
-        # 거리 기반 tangent 스케일
+    
         distance = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
         control_scale = min(distance * 0.5, 2.0)
 
@@ -355,7 +325,7 @@ class PathPlanningNode(Node):
             pose_stamped.header.frame_id = "map"
             pose_stamped.header.stamp = path.header.stamp
 
-            # tangent vectors
+
             tangent_x0 = cx0 - x0
             tangent_y0 = cy0 - y0
             tangent_x1 = x1 - cx1
@@ -396,10 +366,6 @@ class PathPlanningNode(Node):
 
         return path
 
-    # ==========================
-    # 경로 충돌 체크
-    # ==========================
-
     def is_path_collision_free(self, path_msg: Path) -> bool:
         if self.map_grid is None:
             return True
@@ -409,12 +375,10 @@ class PathPlanningNode(Node):
             y = pose.pose.position.y
             rc = self.world_to_grid(x, y)
             if rc is None:
-                # 맵 밖으로 나가면 충돌로 간주
                 return False
             r, c = rc
             val = self.map_grid[r, c]
             if val > 50 or val < 0:
-                # 장애물 또는 unknown
                 return False
         return True
 
