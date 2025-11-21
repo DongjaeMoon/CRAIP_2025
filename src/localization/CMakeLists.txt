@@ -21,6 +21,7 @@ install(
 install(
   PROGRAMS
     localization/odom_localizer_node.py
+    localization/global_localizer_node.py
     localization/utils.py
   DESTINATION lib/${PROJECT_NAME}
 )
