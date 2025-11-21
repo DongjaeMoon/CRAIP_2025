@@ -91,6 +91,9 @@ path_tracker:
     # Path Planning
     local_path_topic: "/local_path"              # Path to follow
     
+    # Map topic
+    cost_map_topic: "/map"
+
     # Control Output
     cmd_ctrl_topic: "/cmd_vel"                   # Velocity command output
     cmd_ctrl_stamped_topic: "/cmd_vel_stamped"   # Stamped velocity command
