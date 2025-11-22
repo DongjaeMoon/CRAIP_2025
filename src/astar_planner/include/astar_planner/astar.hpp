@@ -78,6 +78,9 @@ private:
     const std::unordered_map<GridCell, GridCell, GridCellHash>& came_from,
     const GridCell& start,
     const GridCell& goal) const;
+
+  // Path smoothing function (modified 11.22, DJ)
+  std::vector<GridCell> smoothPath(const std::vector<GridCell>& path);
 };
 
 }  // namespace astar_planner

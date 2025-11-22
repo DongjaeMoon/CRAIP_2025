@@ -72,9 +72,10 @@ path_tracker:
     wheelRadius: 0.1785          # Effective wheel radius (m)
     wheelBase: 0.512             # Distance between front and rear (m)
     
-    maxLinVel: 0.4               # Maximum linear velocity (m/s)
-    maxAngVel: 0.75              # Maximum angular velocity (rad/s)
-    
+    maxLinVel: 0.2               # Maximum linear velocity (m/s)
+    maxAngVel: 0.1              # Maximum angular velocity (rad/s)
+    #DJ's comment_11.22 : maxAngVel, maxLinVel modified needed, always care about this.
+
     # ===========================================================================
     # Coordinate Frames
     # ===========================================================================
