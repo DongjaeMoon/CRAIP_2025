@@ -13,15 +13,15 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():    
-    odom_localizer_node = Node(
+    odom_new_localizer_node = Node(
         package='localization',
-        executable='odom_localizer_node.py',
-        name='odom_localizer_node',
+        executable='odom_new_localizer_node.py',
+        name='odom_new_localizer_node',
         output='screen'
     )
     
     ld = LaunchDescription()
-    ld.add_action(odom_localizer_node)
+    ld.add_action(odom_new_localizer_node)
 
     return ld
 
