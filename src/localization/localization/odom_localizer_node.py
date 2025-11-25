@@ -5,12 +5,11 @@ ROS2 odom localizer node
 
 This node is responsible for localizing the robot in the odom frame.
 
-- It fuses IMU and LiDAR (via scan-to-map ICP) with an Extended Kalman Filter (EKF).
+- It fuses IMU and LiDAR (via scan-to-scan ICP) with an Extended Kalman Filter (EKF).
 - IMU is used as a high-rate prediction source (dead reckoning).
-- ICP (scan-to-map) provides slower but more accurate pose measurements.
-- Because ICP takes time to compute, this node uses a simple "forwarding" scheme:
-  the ICP pose is computed for the scan time (t_scan) and then forwarded to the
-  current time using the IMU motion increments between t_scan and now.
+- ICP (scan-to-scan, LiDAR odometry) provides slower but drift-reduced relative motion.
+- We accumulate scan-to-scan ICP results into a LiDAR odometry pose and use that
+  as a pose measurement for the EKF.
 
 This node publishes:
 
@@ -21,7 +20,7 @@ The "global_localizer" node will provide map -> odom and /go1_pose (map frame).
 Combining map->odom and odom->base gives the global pose map->base.
 
 Original spec:
-    odom_localizer: tf from odom to base_link frame
+    odom_localizer: tf from odom to base_link frame (here we use child "base")
     global_localizer: tf from map to odom frame
     combined: tf from map to base_link frame
 """
@@ -47,21 +46,21 @@ import tf2_ros
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 
-from utils import pose_to_matrix, transform_to_matrix   # 이미 제공되어 있다고 가정
-
+# UPDATED: import scan_to_pcd, icp_2d for scan-to-scan ICP
+from utils import pose_to_matrix, transform_to_matrix, scan_to_pcd, icp_2d  # type: ignore
 
 class OdomLocalizerNode(Node):
     """
     EKF-based odom localizer:
       - State x = [x, y, yaw, v, yaw_rate, bax, bay, bwz]^T  in odom frame
       - Prediction: IMU (/imu_plugin/out)
-      - Measurement: ICP (scan-to-map) pose in odom frame (with forwarding)
+      - Measurement: LiDAR odometry from scan-to-scan ICP (pose in odom frame)
     """
 
     def __init__(self):
         super().__init__("odom_localizer")
 
-        self.get_logger().info("Odom localizer node (EKF + IMU + ICP) initialized")
+        self.get_logger().info("Odom localizer node (EKF + IMU + scan-to-scan ICP) initialized")
 
         # --- Simulation time (/clock) ---
         self.clock_sub = self.create_subscription(
@@ -69,14 +68,15 @@ class OdomLocalizerNode(Node):
         )
         self.current_time: Time | None = None
 
-        # --- TF buffer/listener for map, odom, base, laser frames ---
+        # --- TF buffer/listener for odom, base, laser frames ---
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # --- TF broadcaster for odom -> base ---
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
-        # --- Map & Scan subscriptions (for ICP) ---
+        # --- Map subscription is no longer required for this node, but we keep it
+        #     if you still want /map in this node for debugging or future use.
         map_qos = QoSProfile(
             depth=1,
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -85,13 +85,12 @@ class OdomLocalizerNode(Node):
         self.map_sub = self.create_subscription(
             OccupancyGrid, "/map", self.map_callback, map_qos
         )
+        self.map_msg: OccupancyGrid | None = None  # not used for scan-to-scan ICP
 
-        
+        # --- Scan subscription (for ICP) ---
         self.scan_sub = self.create_subscription(
             LaserScan, "/scan", self.scan_callback, 10
         )
-
-        self.map_msg: OccupancyGrid | None = None
 
         # --- IMU subscription (prediction source) ---
         self.imu_sub = self.create_subscription(
@@ -110,22 +109,42 @@ class OdomLocalizerNode(Node):
         self.initialized = False
         self.last_imu_time: Time | None = None
 
-        # --- IMU increment history for ICP forwarding ---
+        # --- IMU increment history (kept for potential future use / debugging) ---
         # Each entry: (stamp: Time, dx, dy, dyaw)
         self.imu_increments: Deque[Tuple[Time, float, float, float]] = deque(maxlen=2000)
 
-        # --- noise parameters (TODO: 튜닝 필요) ---
+        # --- noise parameters (TODO: tuning needed) ---
         self.Q_imu_base = np.diag([
-            0.01, 0.01, math.radians(1.0),  # x,y,yaw
+            0.01, 0.01, math.radians(1.0),  # x, y, yaw
             0.1, math.radians(5.0),         # v, yaw_rate
             1e-4, 1e-4, 1e-5                # bax, bay, bwz
         ])
         self.R_icp_base = np.diag([
             0.05**2, 0.05**2, math.radians(2.0)**2
-        ])  # ICP 측정 기본 공분산
+        ])  # base ICP measurement covariance
 
-        # --- timer: 주기적으로 odom->base TF & /odom_local publish ---
+        # --- timer: periodically publish odom->base TF & /odom_local ---
         self.tf_timer = self.create_timer(0.01, self.publish_odom_tf_and_msg)
+
+        # === Scan-to-scan ICP (LiDAR odometry) state ===
+        self.prev_scan_pcd: np.ndarray | None = None
+        self.prev_scan_time: Time | None = None
+
+        # LiDAR odometry pose in odom frame (used as measurement to EKF)
+        self.icp_pose_initialized = False
+        self.icp_pose_x = 0.0
+        self.icp_pose_y = 0.0
+        self.icp_pose_yaw = 0.0
+
+        # ICP parameters (you can tune these)
+        self.icp_max_iterations = 50
+        self.icp_tolerance = 1e-4
+        self.icp_distance_threshold = 0.5  # meters
+
+        # Cache base->laser static transform (optional)
+        self.has_base_to_laser = False
+        self.T_base_to_laser = np.eye(4)
+        self.T_laser_to_base = np.eye(4)
 
     # =========================================================
     # Callbacks
@@ -135,16 +154,17 @@ class OdomLocalizerNode(Node):
         self.current_time = Time.from_msg(msg.clock)
 
     def map_callback(self, msg: OccupancyGrid):
+        # Not used by scan-to-scan ICP, kept only for possible future use
         self.map_msg = msg
 
     def imu_callback(self, msg: Imu):
         """
         EKF prediction step using IMU linear acceleration and angular velocity.
-        Also accumulates small SE(2) increments for forwarding.
+        Also accumulates small SE(2) increments (for potential forwarding/debugging).
         """
         t = Time.from_msg(msg.header.stamp)
         if not self.initialized:
-            # 처음 IMU가 들어오는 시점에 상태 초기화 (0 근처)
+            # Initialize state when first IMU arrives
             self.x[:] = 0.0
             self.P = np.eye(self.state_dim) * 0.01
             self.last_imu_time = t
@@ -165,16 +185,16 @@ class OdomLocalizerNode(Node):
         ay_meas = msg.linear_acceleration.y
         wz_meas = msg.angular_velocity.z
 
-        # bias 보정
+        # bias correction
         ax = ax_meas - bax
         ay = ay_meas - bay
         wz = wz_meas - bwz
 
-        # 상태 예측 (아주 단순한 2D 모델)
+        # Very simple 2D model
         yaw_new = yaw + wz * dt
-        v_new = v + ax * dt  # body x축 가속도만 사용한다는 가정
+        v_new = v + ax * dt  # assume forward acceleration along body x
 
-        # world frame 속도
+        # world-frame velocity
         vx_world = v_new * math.cos(yaw_new)
         vy_world = v_new * math.sin(yaw_new)
 
@@ -183,12 +203,12 @@ class OdomLocalizerNode(Node):
 
         x_pred = np.array([[x_new, y_new, yaw_new, v_new, wz, bax, bay, bwz]]).T
 
-        # TODO: F, Q 계산해서 self.P 업데이트 (여기서는 단순히 Q 더하는 형태로 템플릿)
-        F = np.eye(self.state_dim)  # 실제 구현 시 Jacobian 계산 필요
+        # Simple covariance propagation (placeholder)
+        F = np.eye(self.state_dim)
         Q = self.Q_imu_base * dt
         P_pred = F @ self.P @ F.T + Q
 
-        # IMU increment (forwarding용) 저장
+        # Store IMU increments (optional)
         dx = x_new - x
         dy = y_new - y
         dyaw = self.normalize_angle(yaw_new - yaw)
@@ -199,77 +219,125 @@ class OdomLocalizerNode(Node):
 
     def scan_callback(self, scan: LaserScan):
         """
-        1) scan 시각 t_scan에서의 map->odom, odom->base, base->laser TF 조회
-        2) scan-to-map ICP 실행 → map frame에서 base pose (t_scan 시점)
-        3) map pose를 odom pose로 변환 (t_scan)
-        4) IMU increments 로 t_scan → t_now 동안 forward
-        5) EKF update (ICP measurement)
+        Scan-to-scan ICP callback:
+
+        1) Convert LaserScan to point cloud in laser frame.
+        2) If first scan: initialize LiDAR odometry pose from current EKF state.
+        3) For subsequent scans:
+            - Run ICP between previous and current scan to get relative motion
+              in the laser frame.
+            - Optionally convert this motion to the base frame using base->laser TF.
+            - Accumulate this relative motion into a LiDAR odometry pose in odom frame.
+            - Use this pose as a measurement z = [x_icp, y_icp, yaw_icp] for EKF.
         """
         if not self.initialized:
-            return
-        if self.map_msg is None:
             return
         if self.current_time is None:
             return
 
-        t_scan_msg = scan.header.stamp
-        t_scan = Time.from_msg(t_scan_msg)
-        t_now = self.current_time
+        t_scan = Time.from_msg(scan.header.stamp)
 
-        # 1) TF lookup at t_scan
+        # 1) scan -> point cloud in laser frame
         try:
-            map_to_odom_tf = self.tf_buffer.lookup_transform(
-                "map", "odom", t_scan_msg
-            )
-            odom_to_base_tf = self.tf_buffer.lookup_transform(
-                "odom", "base", t_scan_msg
-            )
-            base_to_laser_tf = self.tf_buffer.lookup_transform(
-                "base", "laser", t_scan_msg
-            )
-        except (LookupException, ConnectivityException, ExtrapolationException) as e:
-            self.get_logger().warn(f"[ICP] TF lookup failed: {e}")
+            current_pcd_laser = scan_to_pcd(scan)
+        except Exception as e:
+            self.get_logger().warn(f"[ICP] scan_to_pcd failed: {e}")
             return
 
-        T_map_to_odom = transform_to_matrix(map_to_odom_tf.transform)
-        T_odom_to_base = transform_to_matrix(odom_to_base_tf.transform)
-        T_base_to_laser = transform_to_matrix(base_to_laser_tf.transform)
+        # 2) First scan: initialize previous cloud and LiDAR odom pose
+        if self.prev_scan_pcd is None:
+            self.prev_scan_pcd = current_pcd_laser
+            self.prev_scan_time = t_scan
 
-        # 2) scan-to-map ICP (초기값: map→base = map→odom ∘ odom→base)
-        T_map_to_base_init = T_map_to_odom @ T_odom_to_base
+            # Initialize LiDAR odom pose from current EKF state
+            x, y, yaw = self.x[0, 0], self.x[1, 0], self.x[2, 0]
+            self.icp_pose_x = float(x)
+            self.icp_pose_y = float(y)
+            self.icp_pose_yaw = float(yaw)
+            self.icp_pose_initialized = True
 
+            # Try to cache base->laser transform (static)
+            self.update_base_laser_transform()
+            return
+
+        # 3) Run scan-to-scan ICP: prev_scan_pcd -> current_pcd_laser (in laser frame)
         try:
-            T_map_to_base_icp, fitness, inliers, converged = self.run_scan_to_map_icp(
-                scan, self.map_msg, T_map_to_base_init, T_base_to_laser
+            T_prev_to_curr_laser = icp_2d(
+                previous_pcd=self.prev_scan_pcd,
+                current_pcd=current_pcd_laser,
+                max_iterations=self.icp_max_iterations,
+                tolerance=self.icp_tolerance,
+                distance_threshold=self.icp_distance_threshold,
             )
         except Exception as e:
-            self.get_logger().warn(f"[ICP] run_scan_to_map_icp error: {e}")
+            self.get_logger().warn(f"[ICP] icp_2d failed: {e}")
+            # Update previous scan anyway
+            self.prev_scan_pcd = current_pcd_laser
+            self.prev_scan_time = t_scan
             return
 
-        if not converged:
-            return
+        # Update previous scan
+        self.prev_scan_pcd = current_pcd_laser
+        self.prev_scan_time = t_scan
 
-        # 3) map pose -> odom pose at t_scan: T_odom_to_base_icp_scan
-        T_map_to_odom_inv = np.linalg.inv(T_map_to_odom)
-        T_odom_to_base_icp_scan = T_map_to_odom_inv @ T_map_to_base_icp
+        # Extract relative motion from T_prev_to_curr_laser (3x3 SE(2))
+        dx_laser = float(T_prev_to_curr_laser[0, 2])
+        dy_laser = float(T_prev_to_curr_laser[1, 2])
+        yaw_laser = math.atan2(T_prev_to_curr_laser[1, 0], T_prev_to_curr_laser[0, 0])
 
-        x_icp_scan, y_icp_scan, yaw_icp_scan = self.se2_from_matrix(T_odom_to_base_icp_scan)
+        # 4) Convert relative motion to base frame if we know base->laser
+        if self.has_base_to_laser:
+            # Build 4x4 from 3x3
+            T_prev_to_curr_laser_4 = np.eye(4)
+            T_prev_to_curr_laser_4[0:2, 0:2] = T_prev_to_curr_laser[0:2, 0:2]
+            T_prev_to_curr_laser_4[0:2, 3] = T_prev_to_curr_laser[0:2, 2]
 
-        # 4) forwarding: t_scan → t_now 동안의 IMU Δpose 합산
-        dx_imu, dy_imu, dyaw_imu = self.integrate_imu_delta(t_scan, t_now)
+            # base_prev -> base_curr = T_laser_to_base * (laser_prev->laser_curr) * T_base_to_laser
+            T_prev_to_curr_base_4 = self.T_laser_to_base @ T_prev_to_curr_laser_4 @ self.T_base_to_laser
 
-        x_icp_now = x_icp_scan + dx_imu
-        y_icp_now = y_icp_scan + dy_imu
-        yaw_icp_now = self.normalize_angle(yaw_icp_scan + dyaw_imu)
+            dx_body = float(T_prev_to_curr_base_4[0, 3])
+            dy_body = float(T_prev_to_curr_base_4[1, 3])
+            yaw_body = math.atan2(T_prev_to_curr_base_4[1, 0], T_prev_to_curr_base_4[0, 0])
+        else:
+            # Approximate: treat laser frame as base frame
+            dx_body = dx_laser
+            dy_body = dy_laser
+            yaw_body = yaw_laser
 
-        # 5) EKF update with measurement z = [x_icp_now, y_icp_now, yaw_icp_now]
-        self.ekf_update_icp(x_icp_now, y_icp_now, yaw_icp_now, fitness, inliers)
+        # 5) Accumulate LiDAR odometry pose in odom frame
+        if not self.icp_pose_initialized:
+            x, y, yaw = self.x[0, 0], self.x[1, 0], self.x[2, 0]
+            self.icp_pose_x = float(x)
+            self.icp_pose_y = float(y)
+            self.icp_pose_yaw = float(yaw)
+            self.icp_pose_initialized = True
+
+        # Rotate body delta into world (odom) frame, using current LiDAR odom yaw
+        c = math.cos(self.icp_pose_yaw)
+        s = math.sin(self.icp_pose_yaw)
+        dx_world = c * dx_body - s * dy_body
+        dy_world = s * dx_body + c * dy_body
+
+        self.icp_pose_x += dx_world
+        self.icp_pose_y += dy_world
+        self.icp_pose_yaw = self.normalize_angle(self.icp_pose_yaw + yaw_body)
+
+        # 6) EKF update: use LiDAR odom pose as a pose measurement in odom frame
+        # We approximate fitness/inliers for now (icp_2d doesn't expose them)
+        fitness = 0.1  # you can try to compute a real error metric later
+        inliers = int(current_pcd_laser.shape[0])
+        self.ekf_update_icp(self.icp_pose_x, self.icp_pose_y, self.icp_pose_yaw,
+                            fitness, inliers)
 
     # =========================================================
     # EKF / ICP Helper
     # =========================================================
 
     def integrate_imu_delta(self, t_scan: Time, t_now: Time) -> Tuple[float, float, float]:
+        """
+        Integrate IMU increments between t_scan and t_now.
+        Currently unused in scan-to-scan ICP mode, but kept for possible future use.
+        """
         dx_sum, dy_sum, dyaw_sum = 0.0, 0.0, 0.0
         for stamp, dx, dy, dyaw in self.imu_increments:
             if stamp <= t_scan:
@@ -289,12 +357,10 @@ class OdomLocalizerNode(Node):
         H = [ I_3x3  0_3x5 ]
         R = scaled by ICP quality (fitness, inliers)
         """
-        # quality-based R (간단 템플릿)
         R = self.compute_R_from_icp_quality(self.R_icp_base, fitness, inliers)
         if R is None:
             return
 
-        # H: 3x8
         H = np.zeros((3, self.state_dim))
         H[0, 0] = 1.0  # x
         H[1, 1] = 1.0  # y
@@ -326,9 +392,12 @@ class OdomLocalizerNode(Node):
         """
         Simple heuristic:
         - if inliers too small, skip update (return None)
-        - otherwise scale R with fitness
+        - otherwise scale R with fitness.
+
+        For scan-to-scan ICP, we currently approximate fitness and inliers.
+        You can refine this once you modify icp_2d to return error statistics.
         """
-        MIN_INLIERS = 50
+        MIN_INLIERS = 30
         if inliers < MIN_INLIERS:
             return None
 
@@ -337,38 +406,27 @@ class OdomLocalizerNode(Node):
         return R_base * scale
 
     # =========================================================
-    # ICP 관련 (템플릿)
+    # Base<->Laser transform helper
     # =========================================================
 
-    def run_scan_to_map_icp(self,
-                            scan: LaserScan,
-                            map_msg: OccupancyGrid,
-                            T_map_to_base_init: np.ndarray,
-                            T_base_to_laser: np.ndarray
-                            ) -> Tuple[np.ndarray, float, int, bool]:
+    def update_base_laser_transform(self):
         """
-        Scan-to-map ICP (2D):
-
-        - scan: LaserScan in 'laser' frame
-        - map_msg: OccupancyGrid in 'map' frame
-        - T_map_to_base_init: initial guess of base pose in map frame (4x4)
-        - T_base_to_laser: static transform from base to laser (4x4)
-
-        Returns:
-            T_map_to_base_icp (4x4), fitness, inliers, converged
+        Try to lookup static transform base -> laser once and cache it.
+        If lookup fails, ICP will approximate laser frame as base frame.
         """
-        # TODO:
-        #   1) LaserScan -> point cloud in laser frame
-        #   2) Transform to map frame using T_map_to_base_init @ T_base_to_laser
-        #   3) Prepare map representation (distance field / occupied points)
-        #   4) Run ICP iteration (point-to-map)
-        #
-        # 여기서는 템플릿으로 "초기값 그대로"와 가짜 fitness/inliers만 반환.
-        T_map_to_base_icp = T_map_to_base_init.copy()
-        fitness = 0.1
-        inliers = 200
-        converged = True
-        return T_map_to_base_icp, fitness, inliers, converged
+        if self.has_base_to_laser:
+            return
+        try:
+            # time=0 => latest available, for static TFs this is fine
+            tf_msg = self.tf_buffer.lookup_transform("base", "laser", rclpy.time.Time())
+            T = transform_to_matrix(tf_msg.transform)
+            self.T_base_to_laser = T
+            self.T_laser_to_base = np.linalg.inv(T)
+            self.has_base_to_laser = True
+            self.get_logger().info("[ICP] Cached base->laser transform.")
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            self.get_logger().warn("[ICP] Could not get base->laser transform. Using laser as base.")
+            self.has_base_to_laser = False
 
     # =========================================================
     # TF & Odometry publish
@@ -408,7 +466,7 @@ class OdomLocalizerNode(Node):
         odom.pose.pose.orientation = tf_msg.transform.rotation
         odom.twist.twist.linear.x = float(v)
         odom.twist.twist.angular.z = float(yaw_rate)
-        # TODO: odom.pose.covariance 에 self.P 일부 복사
+        # TODO: copy parts of self.P into odom.pose.covariance if needed
         self.odom_pub.publish(odom)
 
     # =========================================================
