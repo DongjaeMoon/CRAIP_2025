@@ -45,6 +45,7 @@ from geometry_msgs.msg import TransformStamped
 import tf_transformations
 import tf2_ros
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 
 from utils import pose_to_matrix, transform_to_matrix   # 이미 제공되어 있다고 가정
 
@@ -76,9 +77,16 @@ class OdomLocalizerNode(Node):
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         # --- Map & Scan subscriptions (for ICP) ---
-        self.map_sub = self.create_subscription(
-            OccupancyGrid, "/map", self.map_callback, 1
+        map_qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
+        self.map_sub = self.create_subscription(
+            OccupancyGrid, "/map", self.map_callback, map_qos
+        )
+
+        
         self.scan_sub = self.create_subscription(
             LaserScan, "/scan", self.scan_callback, 10
         )

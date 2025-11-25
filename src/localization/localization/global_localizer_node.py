@@ -43,6 +43,7 @@ from geometry_msgs.msg import PoseStamped, TransformStamped
 import tf_transformations
 import tf2_ros
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 
 from utils import pose_to_matrix, transform_to_matrix  # 4x4 변환
 
@@ -78,9 +79,15 @@ class GlobalLocalizerNode(Node):
         self.tf_timer = self.create_timer(self.tf_pub_interval, self.tf_timer_callback)
 
         # --- Map & Scan subscriptions ---
-        self.map_sub = self.create_subscription(
-            OccupancyGrid, "/map", self.map_callback, 1
+        map_qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
+        self.map_sub = self.create_subscription(
+            OccupancyGrid, "/map", self.map_callback, map_qos
+        )
+
         self.scan_sub = self.create_subscription(
             LaserScan, "/scan", self.scan_callback, 10
         )
@@ -123,6 +130,7 @@ class GlobalLocalizerNode(Node):
         self.current_time = Time.from_msg(msg.clock)
 
     def map_callback(self, msg: OccupancyGrid):
+        self.get_logger().info("Got map info")
         self.map_msg = msg
 
     def scan_callback(self, scan: LaserScan):
@@ -226,7 +234,7 @@ class GlobalLocalizerNode(Node):
         tf_msg.transform.rotation.y = float(quaternion[1])
         tf_msg.transform.rotation.z = float(quaternion[2])
         tf_msg.transform.rotation.w = float(quaternion[3])
-
+        
         self.tf_broadcaster.sendTransform(tf_msg)
 
     # =========================================================
