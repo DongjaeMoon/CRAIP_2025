@@ -12,6 +12,7 @@ namespace astar_planner
 const int SAFETY_MARGIN = 5;        // 장애물로부터 5칸 띄우기 (약 0.5m)
 const int SMOOTHING_ITERATIONS = 5; // 경로를 5번 문질러서 부드럽게 만들기
 const double SMOOTH_WEIGHT = 0.5;   // 스무딩 강도 (0.0 ~ 1.0)
+const int samples_per_segment_ = 5; //
 
 AStar::AStar()
 : map_width_(0), map_height_(0)
@@ -117,6 +118,7 @@ std::vector<GridCell> AStar::reconstructPath(
 }
 
 // [추가됨] Path Smoothing 함수 (이동 평균 필터)
+/*
 std::vector<GridCell> AStar::smoothPath(const std::vector<GridCell>& path)
 {
   if (path.size() < 3) return path; // 점이 너무 적으면 스무딩 불가
@@ -138,7 +140,79 @@ std::vector<GridCell> AStar::smoothPath(const std::vector<GridCell>& path)
   }
   
   return smoothed_path;
+}*/
+std::vector<GridCell> AStar::smoothPath(const std::vector<GridCell>& path)
+{
+  if (path.size() < 4 || samples_per_segment_ <= 1) {
+    return path;
+  }
+
+  std::vector<GridCell> out;
+  out.reserve(path.size() * samples_per_segment_);
+
+  // 인덱스 넘어갈 때 양 끝 점으로 클램프
+  auto getP = [&](int idx) {
+    if (idx < 0) idx = 0;
+    if (idx >= static_cast<int>(path.size())) idx = static_cast<int>(path.size()) - 1;
+    return path[static_cast<std::size_t>(idx)];
+  };
+
+  // 네 점 단위로 스플라인 세그먼트 생성
+  for (int i = 0; i < static_cast<int>(path.size()) - 3; ++i) {
+    GridCell p0 = getP(i);
+    GridCell p1 = getP(i + 1);
+    GridCell p2 = getP(i + 2);
+    GridCell p3 = getP(i + 3);
+
+    for (int k = 0; k < samples_per_segment_; ++k) {
+      double t  = static_cast<double>(k) / static_cast<double>(samples_per_segment_);
+      double t2 = t * t;
+      double t3 = t2 * t;
+
+      // cubic B-spline basis
+      double b0 = (-t3 + 3.0 * t2 - 3.0 * t + 1.0) / 6.0;
+      double b1 = ( 3.0 * t3 - 6.0 * t2 + 4.0) / 6.0;
+      double b2 = (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0;
+      double b3 = (        t3                 ) / 6.0;
+
+      double x = b0 * p0.x + b1 * p1.x + b2 * p2.x + b3 * p3.x;
+      double y = b0 * p0.y + b1 * p1.y + b2 * p2.y + b3 * p3.y;
+
+      GridCell gc;
+      gc.x = static_cast<int>(std::round(x));
+      gc.y = static_cast<int>(std::round(y));
+
+      // 맵 범위 체크
+      gc.x = std::max(0, std::min(map_width_  - 1, gc.x));
+      gc.y = std::max(0, std::min(map_height_ - 1, gc.y));
+
+      // 중복 제거 후 push
+      if (out.empty() || !(out.back() == gc)) {
+        out.push_back(gc);
+      }
+    }
+  }
+
+  // 원본 마지막 점 보장
+  out.push_back(path.back());
+
+  // 추가 중복 제거 (선택)
+  std::vector<GridCell> filtered;
+  filtered.reserve(out.size());
+  GridCell prev = out.front();
+  filtered.push_back(prev);
+
+  for (std::size_t i = 1; i < out.size(); ++i) {
+    if (!(out[i] == prev)) {
+      filtered.push_back(out[i]);
+      prev = out[i];
+    }
+  }
+
+  return filtered;
 }
+
+
 
 std::vector<GridCell> AStar::findPath(const GridCell& start, const GridCell& goal)
 {
