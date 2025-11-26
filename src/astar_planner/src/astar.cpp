@@ -9,7 +9,7 @@ namespace astar_planner
 
 // Parameters
 
-const int SAFETY_MARGIN = 5;        // 장애물로부터 5칸 띄우기 (약 0.5m)
+const double SAFETY_MARGIN = 3;        // 장애물로부터 5칸 띄우기 (약 0.5m)
 const int SMOOTHING_ITERATIONS = 5; // 경로를 5번 문질러서 부드럽게 만들기
 const double SMOOTH_WEIGHT = 0.5;   // 스무딩 강도 (0.0 ~ 1.0)
 const int samples_per_segment_ = 5; //
