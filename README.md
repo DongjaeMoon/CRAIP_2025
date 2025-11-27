@@ -352,7 +352,7 @@ Also, the path tracking ability might not be optimal. **For better path followin
 
 ## 5. Communicate with robot through language
 
-**Step 1**: Download Anaconda installation script:
+**Step 1**: Download Anaconda installation script
 
 To handle language command, we will use OpenAI API. 
 For that, we need to create new virtual environment with Anaconda. 
@@ -428,7 +428,7 @@ You need to also declare `OPENAI_API_KEY` to use ChatGPT through Python API:
 export OPENAI_API_KEY='sk-........' # Use your API key
 ```
 
-**Step 4** Create new conda environment
+**Step 4**: Create new conda environment
 
 Create new conda environment `language_command_handler` to use `language_command_handler` package.
 
@@ -449,7 +449,7 @@ pip install -r requirements.txt
 
 If there is no error, you can use `language_command_handler` package from now.
 
-**Step 5** Control robot with language
+**Step 5**: Control robot with language
 
 Start simulation and junior controller:
 ```bash
@@ -484,17 +484,18 @@ ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{comm
 ```
 
 The process of `language_command_handler` is like this:
-0. LLM prompt and callable ROS2 nodes and launch files are listed in `language_command_handler/config/command_handler_config.yaml` 
-1. Take language command from the service
-2. Call LLM with prompt, callable action list, and your command. LLM will select the best action to accomplish your command
-3. It start ROS2 node (or launch file) choosen before. If there was previous action, it automatically stops previous one and start the new one.
+
+1. LLM prompt and callable ROS2 nodes and launch files are listed in `language_command_handler/config/command_handler_config.yaml` 
+2. Take language command from the service
+3. Call LLM with prompt, callable action list, and your command. LLM will select the best action to accomplish your command
+4. It start ROS2 node (or launch file) choosen before. If there was previous action, it automatically stops previous one and start the new one.
 
 Currently there are 3 actions you can call:
 - go_front.py
 - stop.py
 - go_back.launch.py
 
-You can change `command_handler_config.yaml` as you want to run your own codes with only language command.
+You should change `command_handler_config.yaml` as you want to run your own codes with only language command.
 
 ---
 
@@ -524,9 +525,10 @@ Even though path planning is essential for navigation, because we provided enoug
 
 ### Competition (70 points)
 
-You will integrate all modules into a complete navigation system to accomplish 6 missions.
+**You will integrate all modules into a complete navigation system to accomplish 6 missions.**
 You will be given 30 minutes to accomplish the missions. 
 If the scores of two teams are same, the team which used lower time is score higher.
+
 Sometimes robot dies abrupty. In that case, we stop the timewatch.
 We manually move the robot to the place the robot died and restart the simulation. And time is measured again.
 To deal with this kind of sudden restart, it is highly recommend to make your modules to take robot start arguments.
@@ -644,13 +646,17 @@ Create a ROS2 package named `localization` with nodes (Python or C++) that:
 **Points**: 20 points (success/failure)
 
 **Evaluation Process**: 
-The TAs will provide 4 robot trajectory datasets using `ros bag` including camera, lidar, and IMU topics. For the map, you might use the coarse map we provide, or your custom one. Your localization module should localize the robot using these data. **Robot always start at `x=0, y=1, yaw=0`.** For each trajectory (for each ros bag), ou should submit your localization result as `.txt` file. We provide one example. So you should submit 3 `.txt` files. For the submission format, please refer the txt file we provide.
+
+The TAs will provide 4 robot trajectories using `ros bag`. Each ros bag includes camera, lidar, and IMU topics. For the localization, you need map topic also, but we do not provide it. You might use the coarse map we provide, or your custom one. 
+
+Your localization module should localize the robot using these data. **For the ros bag data, robot always start near the `x=0, y=1, yaw=0`.** For each trajectory (for each ros bag), you should submit your localization result as `.txt` file. We provide one file as an example. **So you should submit 3 `.txt` files.** For the submission format, please refer the txt file we provide.
 
 **Evaluation Metrics**:
-We use Absolute Trajectory Error (ATE) for the metric.
-Your localization result will be compared to ground truth trajectory.
+
+For the evaluation, TAs will use Absolute Trajectory Error (ATE) for the metric.
+Your localization result txt will be compared to ground truth trajectory.
 If your accuracy is above the threshold we set, your localization modules is graded as success.
-There are 3 ros bag data, whose score of each is (4, 8, 8), total 20. 
+There are 3 ros bag data, whose score of each is (4, 8, 8), total 20. If you success, you get the point. 
 
 ---
 
@@ -834,7 +840,9 @@ Create a ROS2 package named `perception` with nodes (Python or C++) that:
 ### 📊 Evaluation:
 
 **TO BE UPDATED BY OTHER TA**
+
 **TO BE UPDATED BY OTHER TA**
+
 **TO BE UPDATED BY OTHER TA**
 
 **Points**: 10 points (relative grading among teams)
@@ -869,9 +877,10 @@ The TAs will test your perception module 3 times. At each test, the robot will b
 
 In the competition, you will integrate all three modules (localization, path planning, perception) into a complete autonomous navigation system. The robot will receive high-level language commands and must accomplish various missions.
 
-You will integrate all modules into a complete navigation system to accomplish 6 missions.
+**You will integrate all modules into a complete navigation system to accomplish 6 missions.**
 You will be given 30 minutes to accomplish the missions. 
 If the scores of two teams are same, the team which used lower time is score higher.
+
 Sometimes robot dies abrupty. In that case, we stop the timewatch.
 We manually move the robot to the place the robot died and restart the simulation. And time is measured again.
 To deal with this kind of sudden restart, it is highly recommend to make your modules to take robot start arguments.
@@ -879,13 +888,13 @@ Especially, for the localization module, if robot starts not near `x=0, y=1, yaw
 
 **All the command should be done by only language command. So you can not manually turn on and off ROS2 node/launch.** To see how to do that, please refer how `language_command_handler` works. 
 
-**The language would be changed!**. For example, for mission 1, we will use similar, but not exactly same language command. For example, instead of 'Please navigate me to the toilet', we will might use 'Toilet, toilet, toilet. Hurry.' for the language command. The robot should do the mission robustly to the langauge command. **For that, you need to design your prompt well.**
+**The language would be changed!** For example, for mission 1, we will use similar, but not exactly same language command. For example, instead of 'Please navigate me to the toilet', we will might use 'Toilet, toilet, toilet. Hurry.' for the language command. The robot should do the mission robustly to the langauge command. **For that, you need to design your prompt well with `command_handler_config`.**
 
 **Key Rules**:
 - You **must** use your own localization module (no ground truth robot poses)
 - You **must** use your own path planning module for collision-free navigation  
 - Using ground truth object poses from Gazebo is **not allowed**
-- **Missions will be announced via natural language commands (e.g., "Please navigate me to the toilet")**
+- **Missions will be done only via natural language commands (e.g., "Please navigate me to the toilet")**
 
 ---
 
@@ -1241,4 +1250,5 @@ This will create two new files in the maps directory:
 - `~/make_ai_robot/src/go1_simulation/maps/my_world.pgm` - The map image
 - `~/make_ai_robot/src/go1_simulation/maps/my_world.yaml` - Map metadata (resolution, origin, etc.)
 
-**Important**: The generated map should include all obstacles (furniture, people, etc.), not just walls. A complete map is essential for effective path planning and collision avoidance.
+**Important**: 
+The generated map should include all obstacles (furniture, people, etc.), not just walls. A complete map is essential for effective path planning and collision avoidance.
