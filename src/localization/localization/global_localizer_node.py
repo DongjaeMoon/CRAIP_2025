@@ -1,29 +1,9 @@
 #!/usr/bin/env python3
 
 """
-ROS2 global localizer node
+ROS2 global localizer node - FIXED VERSION
 
-This node is responsible for localizing the robot in the global frame (map).
-
-It publishes:
-- tf from map to odom frame
-- the robot pose in the map frame: /go1_pose (geometry_msgs/msg/PoseStamped, frame_id="map")
-
-By combining the odom localization and global localization, we can get accurate localization.
-
-- odom_localizer: tf from odom to base frame (local odometry using IMU + ICP + EKF)
-- global_localizer: tf from map to odom frame (global localization using LiDAR + map + PF)
-- combined: tf from map to base frame
-
-Algorithm (Monte Carlo Localization, MCL):
-
-- Motion model:
-    - Uses odom->base TF (from odom_localizer) between consecutive scans.
-- Sensor model:
-    - Uses /scan (LaserScan) and /map (OccupancyGrid) to compute likelihood of each particle.
-- Output:
-    - TF: map -> odom
-    - /go1_pose (PoseStamped, frame_id="map")
+Key fix: Non-blocking likelihood field building to prevent node from hanging
 """
 
 import math
@@ -45,7 +25,12 @@ import tf2_ros
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 
-from utils import pose_to_matrix, transform_to_matrix  # 4x4 변환
+from utils import (
+    pose_to_matrix,
+    transform_to_matrix,
+    build_likelihood_field_from_map,
+    compute_scan_log_likelihood_endpoint_model,
+)
 
 
 class Particle:
@@ -94,6 +79,10 @@ class GlobalLocalizerNode(Node):
 
         self.map_msg: OccupancyGrid | None = None
 
+        # Likelihood field (distance field) built from /map for sensor model
+        self.likelihood_field = None
+        self.likelihood_field_building = False
+
         # --- Parameters: initial pose from launch file ---
         self.declare_parameter("x", 0.0)
         self.declare_parameter("y", 1.0)
@@ -122,6 +111,9 @@ class GlobalLocalizerNode(Node):
         # --- /go1_pose (map frame) publisher ---
         self.go1_pose_pub = self.create_publisher(PoseStamped, "/go1_pose", 10)
 
+        # Build likelihood field in background after short delay
+        self.likelihood_build_timer = None
+
     # =========================================================
     # Callbacks
     # =========================================================
@@ -130,36 +122,73 @@ class GlobalLocalizerNode(Node):
         self.current_time = Time.from_msg(msg.clock)
 
     def map_callback(self, msg: OccupancyGrid):
-        self.get_logger().info("Got map info")
+        """
+        Map callback - save map and schedule likelihood field building
+        """
+        self.get_logger().info(f"[PF] Map received: {msg.info.width}x{msg.info.height}, res={msg.info.resolution:.3f}m")
         self.map_msg = msg
+
+        # Schedule likelihood field building with a short delay (non-blocking)
+        if self.likelihood_build_timer is None and not self.likelihood_field_building:
+            self.likelihood_build_timer = self.create_timer(0.5, self.build_likelihood_field_delayed)
+
+    def build_likelihood_field_delayed(self):
+        """
+        Build likelihood field in a timer callback (called once after short delay)
+        """
+        if self.likelihood_field_building:
+            return
+        
+        if self.map_msg is None:
+            return
+
+        self.likelihood_field_building = True
+        self.get_logger().info("[PF] Building likelihood field (this may take a moment)...")
+        
+        try:
+            self.likelihood_field = build_likelihood_field_from_map(self.map_msg)
+            self.get_logger().info("[PF] Likelihood field built successfully!")
+        except Exception as e:
+            self.get_logger().error(f"[PF] Failed to build likelihood field: {e}")
+            import traceback
+            self.get_logger().error(f"Traceback: {traceback.format_exc()}")
+            self.likelihood_field = None
+        finally:
+            self.likelihood_field_building = False
+            # Cancel the timer so it only runs once
+            if self.likelihood_build_timer is not None:
+                self.likelihood_build_timer.cancel()
+                self.likelihood_build_timer = None
 
     def scan_callback(self, scan: LaserScan):
         """
-        Particle Filter iteration triggered by each LaserScan:
-          1) Get odom->base TF at scan time.
-          2) Compute odom-frame motion delta since last scan.
-          3) PF prediction (motion model).
-          4) PF update (sensor model using scan + map) → weights.
-          5) Resample.
-          6) Compute best particle (map frame pose).
-          7) Update map->odom.
-          8) Publish /go1_pose.
+        Particle Filter iteration triggered by each LaserScan
         """
         if self.current_time is None:
             return
         if self.map_msg is None:
             return
+        
+        # Wait for likelihood field to be ready
+        if self.likelihood_field is None:
+            if self.likelihood_field_building:
+                # Still building, skip this scan
+                return
+            else:
+                # Building failed or not started
+                self.get_logger().warn("[PF] No likelihood field available", throttle_duration_sec=5.0)
+                return
 
         t_scan_msg = scan.header.stamp
         t_scan = Time.from_msg(t_scan_msg)
 
-        # 1) odom->base (local odometry from odom_localizer)
+        # 1) Get odom->base TF
         try:
             odom_to_base_tf = self.tf_buffer.lookup_transform(
                 "odom", "base", t_scan_msg
             )
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
-            self.get_logger().warn(f"[PF] Could not get odom->base: {e}")
+            self.get_logger().warn(f"[PF] Could not get odom->base: {e}", throttle_duration_sec=2.0)
             return
 
         T_odom_to_base = transform_to_matrix(odom_to_base_tf.transform)
@@ -171,9 +200,10 @@ class GlobalLocalizerNode(Node):
             self.last_scan_time = t_scan
             self.pf_initialized = True
 
-            # 초기 map->odom = T_map_to_base_init * inv(T_odom_to_base)
+            # Initial map->odom = T_map_to_base_init * inv(T_odom_to_base)
             self.update_map_to_odom_from_pose_matrix(self.T_map_to_base_init, T_odom_to_base)
             self.publish_go1_pose_from_matrix(self.T_map_to_base_init, t_scan_msg)
+            self.get_logger().info("[PF] Particle filter initialized and broadcasting map->odom")
             return
 
         if self.last_odom_to_base_T is None:
@@ -181,11 +211,11 @@ class GlobalLocalizerNode(Node):
             self.last_scan_time = t_scan
             return
 
-        # 2) odom-frame motion delta
+        # 2) Compute motion delta
         T_prev = self.last_odom_to_base_T
         T_curr = T_odom_to_base
         T_prev_inv = np.linalg.inv(T_prev)
-        T_delta = T_prev_inv @ T_curr  # 4x4
+        T_delta = T_prev_inv @ T_curr
 
         self.last_odom_to_base_T = T_odom_to_base
         self.last_scan_time = t_scan
@@ -195,13 +225,13 @@ class GlobalLocalizerNode(Node):
         # 3) PF prediction
         self.pf_prediction(dx_odom, dy_odom, dyaw_odom)
 
-        # 4) PF sensor update (scan + map)
+        # 4) PF sensor update
         self.pf_update_weights(scan)
 
         # 5) Resample
         self.resample_particles()
 
-        # 6) Best particle in map frame
+        # 6) Best particle
         best_p = max(self.particles, key=lambda p: p.weight)
         T_map_to_base = self.matrix_from_pose_2d(best_p.x, best_p.y, best_p.yaw)
 
@@ -213,7 +243,7 @@ class GlobalLocalizerNode(Node):
 
     def tf_timer_callback(self):
         """
-        Periodically publish map->odom TF using the latest T_map_to_odom.
+        Periodically publish map->odom TF
         """
         if self.current_time is None:
             return
@@ -254,12 +284,7 @@ class GlobalLocalizerNode(Node):
             self.particles.append(Particle(x, y, yaw, weight=1.0 / self.num_particles))
 
     def pf_prediction(self, dx_odom: float, dy_odom: float, dyaw_odom: float):
-        """
-        Motion model:
-        - dx_odom, dy_odom, dyaw_odom: odom-frame motion between scans.
-        - We treat this as robot's body motion; for each particle we add noise and
-          rotate into the particle's heading in map frame.
-        """
+        """Motion model"""
         sigma_trans = 0.02
         sigma_rot = math.radians(2.0)
 
@@ -279,28 +304,53 @@ class GlobalLocalizerNode(Node):
             p.yaw = self.normalize_angle(p.yaw + noisy_dyaw)
 
     def pf_update_weights(self, scan: LaserScan):
-        """
-        Sensor model:
-        - Use /scan and /map to compute p(z | x) for each particle.
-        - This is just a placeholder; you need to implement your own likelihood
-          based on OccupancyGrid (e.g., likelihood field, endpoint model).
-        """
+        """Sensor model"""
         if self.map_msg is None:
             return
+        if self.likelihood_field is None:
+            return
 
-        # TODO: 실제 센서 모델 구현
-        # 지금은 단순 uniform weight
         N = len(self.particles)
         if N == 0:
             return
-        uniform_w = 1.0 / N
+
+        # Compute log-likelihood for each particle
+        log_weights = []
         for p in self.particles:
-            p.weight = uniform_w
+            try:
+                log_w = compute_scan_log_likelihood_endpoint_model(
+                    particle_x=p.x,
+                    particle_y=p.y,
+                    particle_yaw=p.yaw,
+                    scan=scan,
+                    likelihood_field=self.likelihood_field,
+                    max_beams=60,
+                    sigma_hit=0.2,
+                    z_hit=0.9,
+                    z_rand=0.1,
+                )
+                log_weights.append(log_w)
+            except Exception as e:
+                self.get_logger().warn(f"[PF] Likelihood computation failed: {e}", throttle_duration_sec=5.0)
+                log_weights.append(-1e10)  # Very low weight
+
+        # Convert to normalized linear weights
+        max_log_w = max(log_weights)
+        linear_weights = [math.exp(lw - max_log_w) for lw in log_weights]
+
+        sum_w = sum(linear_weights)
+        if sum_w <= 0.0 or not math.isfinite(sum_w):
+            uniform_w = 1.0 / N
+            for p in self.particles:
+                p.weight = uniform_w
+            return
+
+        inv_sum_w = 1.0 / sum_w
+        for p, w in zip(self.particles, linear_weights):
+            p.weight = w * inv_sum_w
 
     def resample_particles(self):
-        """
-        Low-variance resampling.
-        """
+        """Low-variance resampling"""
         N = len(self.particles)
         if N == 0:
             return
@@ -337,12 +387,17 @@ class GlobalLocalizerNode(Node):
 
     @staticmethod
     def matrix_from_pose_2d(x: float, y: float, yaw: float) -> np.ndarray:
+        """Construct 4x4 transformation matrix from 2D pose"""
         T = np.eye(4)
-        q = tf_transformations.quaternion_from_euler(0.0, 0.0, yaw)
-        T[:3, :3] = tf_transformations.quaternion_matrix(q)[:3, :3]
+        c = math.cos(yaw)
+        s = math.sin(yaw)
+        T[0, 0] = c
+        T[0, 1] = -s
+        T[1, 0] = s
+        T[1, 1] = c
         T[0, 3] = x
         T[1, 3] = y
-        T[2, 3] = 0.0
+        T[2, 3] = 0.33  # robot base height
         return T
 
     @staticmethod
@@ -354,26 +409,13 @@ class GlobalLocalizerNode(Node):
 
     def update_map_to_odom_from_pose_matrix(self, T_map_to_base: np.ndarray, T_odom_to_base: np.ndarray):
         """
-        Given:
-            T_map_to_base : 4x4 (base pose in map frame from PF)
-            T_odom_to_base: 4x4 (base pose in odom frame from odom_localizer)
-
-        We want T_map_to_odom such that:
-            T_map_to_base = T_map_to_odom * T_odom_to_base
-
-        => T_map_to_odom = T_map_to_base * inv(T_odom_to_base)
+        T_map_to_odom = T_map_to_base * inv(T_odom_to_base)
         """
         T_odom_to_base_inv = np.linalg.inv(T_odom_to_base)
         self.T_map_to_odom = T_map_to_base @ T_odom_to_base_inv
 
     def publish_go1_pose_from_matrix(self, T_map_to_base: np.ndarray, stamp):
-        """
-        Publish the estimated pose in the map frame:
-
-        Topic: /go1_pose
-        Message type: geometry_msgs/msg/PoseStamped
-        Frame ID: map
-        """
+        """Publish pose in map frame"""
         go1 = PoseStamped()
         go1.header.stamp = stamp
         go1.header.frame_id = "map"

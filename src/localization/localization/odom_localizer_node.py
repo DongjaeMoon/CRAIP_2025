@@ -190,21 +190,50 @@ class OdomLocalizerNode(Node):
         ay = ay_meas - bay
         wz = wz_meas - bwz
 
-        # Very simple 2D model
+        # FIXED: Improved motion model
+        # Update yaw first
+        yaw_mid = yaw + 0.5 * wz * dt  # midpoint yaw for better integration
         yaw_new = yaw + wz * dt
-        v_new = v + ax * dt  # assume forward acceleration along body x
+        
+        # Update velocity (assuming forward acceleration)
+        v_new = v + ax * dt
 
-        # world-frame velocity
-        vx_world = v_new * math.cos(yaw_new)
-        vy_world = v_new * math.sin(yaw_new)
+        # FIXED: Use midpoint yaw for position update (more accurate)
+        cos_yaw_mid = math.cos(yaw_mid)
+        sin_yaw_mid = math.sin(yaw_mid)
+        
+        # world-frame displacement
+        dx_world = v * cos_yaw_mid * dt + 0.5 * ax * cos_yaw_mid * dt * dt
+        dy_world = v * sin_yaw_mid * dt + 0.5 * ax * sin_yaw_mid * dt * dt
 
-        x_new = x + vx_world * dt
-        y_new = y + vy_world * dt
+        x_new = x + dx_world
+        y_new = y + dy_world
 
         x_pred = np.array([[x_new, y_new, yaw_new, v_new, wz, bax, bay, bwz]]).T
 
-        # Simple covariance propagation (placeholder)
+        # FIXED: Proper Jacobian for covariance propagation
         F = np.eye(self.state_dim)
+        
+        # Partial derivatives
+        # dx/dyaw
+        F[0, 2] = -v * sin_yaw_mid * dt - 0.5 * ax * sin_yaw_mid * dt * dt
+        # dx/dv
+        F[0, 3] = cos_yaw_mid * dt
+        
+        # dy/dyaw
+        F[1, 2] = v * cos_yaw_mid * dt + 0.5 * ax * cos_yaw_mid * dt * dt
+        # dy/dv
+        F[1, 3] = sin_yaw_mid * dt
+        
+        # dyaw/dyaw_rate (integrated angular velocity)
+        F[2, 4] = dt
+        
+        # dv/dbax (velocity affected by x-axis bias)
+        F[3, 5] = -dt
+        
+        # dyaw/dbwz (yaw affected by angular velocity bias)
+        F[2, 7] = -dt
+
         Q = self.Q_imu_base * dt
         P_pred = F @ self.P @ F.T + Q
 
@@ -249,12 +278,13 @@ class OdomLocalizerNode(Node):
             self.prev_scan_pcd = current_pcd_laser
             self.prev_scan_time = t_scan
 
-            # Initialize LiDAR odom pose from current EKF state
-            x, y, yaw = self.x[0, 0], self.x[1, 0], self.x[2, 0]
-            self.icp_pose_x = float(x)
-            self.icp_pose_y = float(y)
-            self.icp_pose_yaw = float(yaw)
-            self.icp_pose_initialized = True
+            # FIXED: Initialize LiDAR odom pose only once
+            if not self.icp_pose_initialized:
+                x, y, yaw = self.x[0, 0], self.x[1, 0], self.x[2, 0]
+                self.icp_pose_x = float(x)
+                self.icp_pose_y = float(y)
+                self.icp_pose_yaw = float(yaw)
+                self.icp_pose_initialized = True
 
             # Try to cache base->laser transform (static)
             self.update_base_laser_transform()
@@ -305,13 +335,7 @@ class OdomLocalizerNode(Node):
             yaw_body = yaw_laser
 
         # 5) Accumulate LiDAR odometry pose in odom frame
-        if not self.icp_pose_initialized:
-            x, y, yaw = self.x[0, 0], self.x[1, 0], self.x[2, 0]
-            self.icp_pose_x = float(x)
-            self.icp_pose_y = float(y)
-            self.icp_pose_yaw = float(yaw)
-            self.icp_pose_initialized = True
-
+        # FIXED: Removed duplicate initialization check
         # Rotate body delta into world (odom) frame, using current LiDAR odom yaw
         c = math.cos(self.icp_pose_yaw)
         s = math.sin(self.icp_pose_yaw)
@@ -381,7 +405,9 @@ class OdomLocalizerNode(Node):
 
         K = self.P @ H.T @ S_inv
         x_upd = self.x + K @ y
-        P_upd = (np.eye(self.state_dim) - K @ H) @ self.P
+        # FIXED: Use Joseph form for numerical stability
+        I_KH = np.eye(self.state_dim) - K @ H
+        P_upd = I_KH @ self.P @ I_KH.T + K @ R @ K.T
 
         x_upd[2, 0] = self.normalize_angle(x_upd[2, 0])
 
@@ -417,16 +443,15 @@ class OdomLocalizerNode(Node):
         if self.has_base_to_laser:
             return
         try:
-            # time=0 => latest available, for static TFs this is fine
-            tf_msg = self.tf_buffer.lookup_transform("base", "laser", rclpy.time.Time())
+            # FIXED: Use Time() without arguments for latest transform
+            tf_msg = self.tf_buffer.lookup_transform("base", "laser", Time())
             T = transform_to_matrix(tf_msg.transform)
             self.T_base_to_laser = T
             self.T_laser_to_base = np.linalg.inv(T)
             self.has_base_to_laser = True
             self.get_logger().info("[ICP] Cached base->laser transform.")
         except (LookupException, ConnectivityException, ExtrapolationException):
-            self.get_logger().warn("[ICP] Could not get base->laser transform. Using laser as base.")
-            self.has_base_to_laser = False
+            pass  # Will retry on next scan
 
     # =========================================================
     # TF & Odometry publish
