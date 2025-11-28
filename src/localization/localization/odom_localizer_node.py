@@ -374,21 +374,18 @@ class OdomLocalizerNode(Node):
         return dx_sum, dy_sum, dyaw_sum
 
     def ekf_update_icp(self, x_meas: float, y_meas: float, yaw_meas: float,
-                       fitness: float, inliers: int):
+                   fitness: float, inliers: int):
         """
         EKF measurement update with ICP pose (in odom frame).
-        z = [x, y, yaw]^T
-        H = [ I_3x3  0_3x5 ]
-        R = scaled by ICP quality (fitness, inliers)
         """
         R = self.compute_R_from_icp_quality(self.R_icp_base, fitness, inliers)
         if R is None:
             return
 
         H = np.zeros((3, self.state_dim))
-        H[0, 0] = 1.0  # x
-        H[1, 1] = 1.0  # y
-        H[2, 2] = 1.0  # yaw
+        H[0, 0] = 1.0
+        H[1, 1] = 1.0
+        H[2, 2] = 1.0
 
         z = np.array([[x_meas, y_meas, yaw_meas]]).T
         hx = np.array([[self.x[0, 0], self.x[1, 0], self.x[2, 0]]]).T
@@ -405,7 +402,6 @@ class OdomLocalizerNode(Node):
 
         K = self.P @ H.T @ S_inv
         x_upd = self.x + K @ y
-        # FIXED: Use Joseph form for numerical stability
         I_KH = np.eye(self.state_dim) - K @ H
         P_upd = I_KH @ self.P @ I_KH.T + K @ R @ K.T
 
@@ -413,6 +409,16 @@ class OdomLocalizerNode(Node):
 
         self.x = x_upd
         self.P = P_upd
+        
+        # NEW: Reset ICP pose to match EKF estimate
+        self.icp_pose_x = float(self.x[0, 0])
+        self.icp_pose_y = float(self.x[1, 0])
+        self.icp_pose_yaw = float(self.x[2, 0])
+        
+        self.get_logger().debug(
+            f"[EKF] Updated and synchronized ICP pose to ({self.icp_pose_x:.3f}, "
+            f"{self.icp_pose_y:.3f}, {math.degrees(self.icp_pose_yaw):.1f}°)"
+        )
 
     def compute_R_from_icp_quality(self, R_base: np.ndarray, fitness: float, inliers: int):
         """

@@ -396,11 +396,17 @@ def compute_scan_log_likelihood_endpoint_model(
 
     # Subsample beams if requested for computational efficiency
     n_beams = len(ranges)
-    if max_beams is not None and max_beams > 0 and max_beams < n_beams:
-        step = max(1, n_beams // max_beams)
-        indices = range(0, n_beams, step)
-    else:
+    # if max_beams is not None and max_beams > 0 and max_beams < n_beams:
+    #     step = max(1, n_beams // max_beams)
+    #     indices = range(0, n_beams, step)
+    # else:
+    #     indices = range(n_beams)
+
+    if max_beams >= n_beams:
         indices = range(n_beams)
+    else:
+        bins = np.array_split(np.arange(n_beams), max_beams)
+        indices = [np.random.choice(bin) for bin in bins if len(bin) > 0]
 
     log_w = 0.0
     valid_count = 0
@@ -463,3 +469,101 @@ def compute_scan_log_likelihood_endpoint_model(
         return -1e9
 
     return log_w
+
+def compute_scan_correlation(
+    particle_x: float,
+    particle_y: float,
+    particle_yaw: float,
+    scan: LaserScan,
+    likelihood_field: Dict[str, Any],
+    max_beams: int = 60
+) -> float:
+    """
+    Scan correlation using ray endpoints AND directions.
+    More rotation-sensitive than pure endpoint model.
+    """
+    dist_field = likelihood_field["distance"]
+    origin_x = likelihood_field["origin_x"]
+    origin_y = likelihood_field["origin_y"]
+    resolution = likelihood_field["resolution"]
+    width = likelihood_field["width"]
+    height = likelihood_field["height"]
+
+    ranges = np.array(scan.ranges, dtype=float)
+    angle_min = scan.angle_min
+    angle_inc = scan.angle_increment
+    r_min = scan.range_min
+    r_max = scan.range_max
+
+    n_beams = len(ranges)
+    if max_beams and max_beams < n_beams:
+        step = max(1, n_beams // max_beams)
+        indices = range(0, n_beams, step)
+    else:
+        indices = range(n_beams)
+
+    correlation = 0.0
+    valid_count = 0
+    
+    cos_yaw = math.cos(particle_yaw)
+    sin_yaw = math.sin(particle_yaw)
+
+    for i in indices:
+        r = ranges[i]
+        if not np.isfinite(r) or r < r_min or r > r_max:
+            continue
+
+        angle = angle_min + i * angle_inc
+        cos_angle = math.cos(angle)
+        sin_angle = math.sin(angle)
+        
+        # Endpoint
+        x_l = r * cos_angle
+        y_l = r * sin_angle
+        x_world = particle_x + cos_yaw * x_l - sin_yaw * y_l
+        y_world = particle_y + sin_yaw * x_l + cos_yaw * y_l
+
+        cell = world_to_map(x_world, y_world, origin_x, origin_y, 
+                           resolution, width, height)
+        if cell is None:
+            continue
+
+        mx, my = cell
+        endpoint_dist = float(dist_field[my, mx])
+        
+        # ✅ NEW: Sample along the ray (rotation-sensitive!)
+        # Check multiple points along the ray, not just endpoint
+        ray_score = 0.0
+        num_samples = 5
+        
+        for s in range(1, num_samples + 1):
+            sample_r = r * (s / num_samples)
+            sx_l = sample_r * cos_angle
+            sy_l = sample_r * sin_angle
+            sx_world = particle_x + cos_yaw * sx_l - sin_yaw * sy_l
+            sy_world = particle_y + sin_yaw * sx_l + cos_yaw * sy_l
+            
+            sample_cell = world_to_map(sx_world, sy_world, origin_x, 
+                                      origin_y, resolution, width, height)
+            if sample_cell is None:
+                continue
+            
+            smx, smy = sample_cell
+            sample_dist = float(dist_field[smy, smx])
+            
+            # Penalize if ray passes through occupied space
+            if sample_dist < 0.1:  # Close to obstacle
+                ray_score -= 1.0
+        
+        # Combine endpoint distance and ray traversal
+        if endpoint_dist < 0.2:  # Endpoint near obstacle (good)
+            correlation += 1.0 + ray_score * 0.1
+        else:
+            correlation += math.exp(-endpoint_dist) + ray_score * 0.1
+        
+        valid_count += 1
+
+    if valid_count == 0:
+        return -1e9
+    
+    return correlation / valid_count

@@ -30,6 +30,9 @@ from utils import (
     transform_to_matrix,
     build_likelihood_field_from_map,
     compute_scan_log_likelihood_endpoint_model,
+    scan_to_pcd,
+    icp_2d,
+    compute_scan_correlation,
 )
 
 
@@ -98,7 +101,7 @@ class GlobalLocalizerNode(Node):
         )
 
         # --- Particle Filter state ---
-        self.num_particles = 200
+        self.num_particles = 150
         self.particles: List[Particle] = []
         self.pf_initialized = False
 
@@ -113,6 +116,23 @@ class GlobalLocalizerNode(Node):
 
         # Build likelihood field in background after short delay
         self.likelihood_build_timer = None
+
+        # NEW: Separate update rates
+        self.pf_update_rate = 2.0  # Run PF at 2 Hz
+        self.last_pf_update_time = None
+        self.pf_update_interval = 1.0 / self.pf_update_rate
+
+        self.icp_counter = 0
+        self.icp_every_n_updates = 5  # Run ICP every 5th PF update
+        self.smoothed_x = None
+        self.smoothed_y = None
+        self.smoothed_yaw = None
+        self.alpha_pos = 0.3  # Smoothing factor for position
+        self.alpha_yaw = 0.2  # Smoothing factor for yaw
+
+        self.map_cache = {}  # Dict: (grid_x, grid_y, radius) -> np.ndarray
+        self.map_cache_resolution = 2.0  # Cache grid cell size [m]
+        self.map_cache_max_size = 100  # Maximum cache entries
 
     # =========================================================
     # Callbacks
@@ -178,6 +198,16 @@ class GlobalLocalizerNode(Node):
                 # Building failed or not started
                 self.get_logger().warn("[PF] No likelihood field available", throttle_duration_sec=5.0)
                 return
+        
+        t_scan = Time.from_msg(scan.header.stamp)
+        
+        # Check if enough time has passed for PF update
+        if self.last_pf_update_time is not None:
+            dt = (t_scan - self.last_pf_update_time).nanoseconds * 1e-9
+            if dt < self.pf_update_interval:
+                # Skip PF update, but still update pose estimate
+                self.update_pose_estimate_only(scan, t_scan)
+                return
 
         t_scan_msg = scan.header.stamp
         t_scan = Time.from_msg(t_scan_msg)
@@ -232,8 +262,15 @@ class GlobalLocalizerNode(Node):
         self.resample_particles()
 
         # 6) Best particle
-        best_p = max(self.particles, key=lambda p: p.weight)
-        T_map_to_base = self.matrix_from_pose_2d(best_p.x, best_p.y, best_p.yaw)
+        # best_p = max(self.particles, key=lambda p: p.weight)
+        # T_map_to_base = self.matrix_from_pose_2d(best_p.x, best_p.y, best_p.yaw)
+
+        pose = self.get_smoothed_pose()
+        if pose is None:
+            return
+        
+        smooth_x, smooth_y, smooth_yaw = pose
+        T_map_to_base = self.matrix_from_pose_2d(smooth_x, smooth_y, smooth_yaw)
 
         # 7) Update map->odom
         self.update_map_to_odom_from_pose_matrix(T_map_to_base, T_odom_to_base)
@@ -314,40 +351,85 @@ class GlobalLocalizerNode(Node):
         if N == 0:
             return
 
-        # Compute log-likelihood for each particle
-        log_weights = []
         for p in self.particles:
             try:
-                log_w = compute_scan_log_likelihood_endpoint_model(
-                    particle_x=p.x,
-                    particle_y=p.y,
-                    particle_yaw=p.yaw,
-                    scan=scan,
-                    likelihood_field=self.likelihood_field,
-                    max_beams=60,
-                    sigma_hit=0.2,
-                    z_hit=0.9,
-                    z_rand=0.1,
-                )
-                log_weights.append(log_w)
+                # More accurate but slower
+                correlation = compute_scan_correlation(
+                    p.x, p.y, p.yaw, scan, self.likelihood_field, max_beams=50)
+                p.weight = max(1e-10, correlation)
             except Exception as e:
-                self.get_logger().warn(f"[PF] Likelihood computation failed: {e}", throttle_duration_sec=5.0)
-                log_weights.append(-1e10)  # Very low weight
-
+                p.weight = 1e-10
+        
         # Convert to normalized linear weights
-        max_log_w = max(log_weights)
-        linear_weights = [math.exp(lw - max_log_w) for lw in log_weights]
+        # Normalize
+        total = sum(p.weight for p in self.particles)
+        for p in self.particles:
+            p.weight /= total
+        
+        self.icp_counter += 1
+        if self.icp_counter >= self.icp_every_n_updates:
+            self.refine_top_particles_with_icp(scan, top_k=3)  # Reduce from 5 to 3
+            self.icp_counter = 0
 
-        sum_w = sum(linear_weights)
-        if sum_w <= 0.0 or not math.isfinite(sum_w):
-            uniform_w = 1.0 / N
-            for p in self.particles:
-                p.weight = uniform_w
+    def refine_top_particles_with_icp(self, scan: LaserScan, top_k: int = 5):
+        """Apply ICP to refine top-K particles"""
+        
+        # Sort by weight
+        sorted_indices = sorted(
+            range(len(self.particles)),
+            key=lambda i: self.particles[i].weight,
+            reverse=True
+        )
+        
+        scan_pcd = scan_to_pcd(scan)
+        if len(scan_pcd) < 20:
             return
-
-        inv_sum_w = 1.0 / sum_w
-        for p, w in zip(self.particles, linear_weights):
-            p.weight = w * inv_sum_w
+        
+        refined = 0
+        for idx in sorted_indices[:top_k]:
+            p = self.particles[idx]
+            
+            # Extract local map
+            map_pcd = self.get_cached_map_region(p.x, p.y, radius=8.0)
+            if map_pcd is None or len(map_pcd) < 30:
+                continue
+            
+            # Transform scan to world
+            scan_world = self.transform_scan_to_world(scan_pcd, p.x, p.y, p.yaw)
+            
+            try:
+                # ICP alignment
+                T_icp = icp_2d(
+                    previous_pcd=map_pcd,
+                    current_pcd=scan_world,
+                    max_iterations=25,
+                    tolerance=1e-4,
+                    distance_threshold=0.25
+                )
+                
+                # Update particle
+                dx = T_icp[0, 2]
+                dy = T_icp[1, 2]
+                dyaw = math.atan2(T_icp[1, 0], T_icp[0, 0])
+                
+                # Only apply if refinement is small (sanity check)
+                if math.sqrt(dx**2 + dy**2) < 0.5 and abs(dyaw) < math.radians(15):
+                    p.x += dx
+                    p.y += dy
+                    p.yaw = self.normalize_angle(p.yaw + dyaw)
+                    p.weight *= 1.2  # Boost weight
+                    refined += 1
+                    
+            except Exception:
+                pass
+        
+        # Re-normalize after weight boosting
+        total = sum(p.weight for p in self.particles)
+        for p in self.particles:
+            p.weight /= total
+        
+        if refined > 0:
+            self.get_logger().debug(f"[ICP] Refined {refined}/{top_k} particles")
 
     def resample_particles(self):
         """Low-variance resampling"""
@@ -431,6 +513,158 @@ class GlobalLocalizerNode(Node):
         go1.pose.orientation.w = float(quat[3])
 
         self.go1_pose_pub.publish(go1)
+    
+    # ICP helpers
+    def extract_map_points_around_pose(self, x: float, y: float, radius: float) -> np.ndarray | None:
+        """
+        Extract occupied cells from map as point cloud around a pose.
+        
+        Args:
+            x, y: Center position in map frame [m]
+            radius: Extraction radius [m]
+            
+        Returns:
+            map_pcd: (N, 2) array of occupied cell coordinates, or None
+        """
+        if self.map_msg is None:
+            return None
+        
+        info = self.map_msg.info
+        width = info.width
+        height = info.height
+        resolution = info.resolution
+        origin_x = info.origin.position.x
+        origin_y = info.origin.position.y
+        
+        # Convert center to map coordinates
+        cx = int((x - origin_x) / resolution)
+        cy = int((y - origin_y) / resolution)
+        
+        # Compute radius in cells
+        radius_cells = int(radius / resolution)
+        
+        # Extract region
+        x_min = max(0, cx - radius_cells)
+        x_max = min(width, cx + radius_cells)
+        y_min = max(0, cy - radius_cells)
+        y_max = min(height, cy + radius_cells)
+        
+        # Find occupied cells in region
+        data = np.array(self.map_msg.data, dtype=np.int8).reshape((height, width))
+        points = []
+        
+        for my in range(y_min, y_max):
+            for mx in range(x_min, x_max):
+                if data[my, mx] >= 50:  # Occupied threshold
+                    # Convert to world coordinates
+                    px = origin_x + mx * resolution
+                    py = origin_y + my * resolution
+                    points.append([px, py])
+        
+        if len(points) == 0:
+            return None
+        
+        return np.array(points, dtype=np.float32)
+
+    def transform_scan_to_world(self, scan_pcd: np.ndarray, 
+                                x: float, y: float, yaw: float) -> np.ndarray:
+        """
+        Transform scan point cloud from laser frame to world frame.
+        
+        Args:
+            scan_pcd: (N, 2) scan points in laser frame
+            x, y, yaw: Robot pose in world frame
+            
+        Returns:
+            world_pcd: (N, 2) scan points in world frame
+        """
+        # Rotation matrix
+        c = math.cos(yaw)
+        s = math.sin(yaw)
+        R = np.array([[c, -s], [s, c]])
+        
+        # Transform: world = R @ scan + translation
+        world_pcd = (R @ scan_pcd.T).T + np.array([x, y])
+        
+        return world_pcd
+
+    def get_smoothed_pose(self):
+        """Compute weighted average of particles and smooth over time"""
+        # Weighted average of top particles
+        sorted_particles = sorted(self.particles, key=lambda p: p.weight, reverse=True)
+        top_k = min(10, len(sorted_particles))
+        
+        total_weight = sum(p.weight for p in sorted_particles[:top_k])
+        if total_weight == 0:
+            return None
+            
+        avg_x = sum(p.x * p.weight for p in sorted_particles[:top_k]) / total_weight
+        avg_y = sum(p.y * p.weight for p in sorted_particles[:top_k]) / total_weight
+        
+        # Circular average for yaw
+        sin_sum = sum(math.sin(p.yaw) * p.weight for p in sorted_particles[:top_k])
+        cos_sum = sum(math.cos(p.yaw) * p.weight for p in sorted_particles[:top_k])
+        avg_yaw = math.atan2(sin_sum, cos_sum)
+        
+        # EMA smoothing
+        if self.smoothed_x is None:
+            self.smoothed_x = avg_x
+            self.smoothed_y = avg_y
+            self.smoothed_yaw = avg_yaw
+        else:
+            self.smoothed_x = self.alpha_pos * avg_x + (1 - self.alpha_pos) * self.smoothed_x
+            self.smoothed_y = self.alpha_pos * avg_y + (1 - self.alpha_pos) * self.smoothed_y
+            
+            # Smooth yaw using circular interpolation
+            delta_yaw = self.normalize_angle(avg_yaw - self.smoothed_yaw)
+            self.smoothed_yaw = self.normalize_angle(self.smoothed_yaw + self.alpha_yaw * delta_yaw)
+        
+        return self.smoothed_x, self.smoothed_y, self.smoothed_yaw
+    def get_cached_map_region(self, x: float, y: float, radius: float) -> np.ndarray | None:
+        """
+        Get map point cloud with caching.
+        
+        Caches extracted map regions on a spatial grid to avoid redundant extractions
+        when multiple nearby particles request the same region.
+        
+        Args:
+            x, y: Center position in map frame [m]
+            radius: Extraction radius [m]
+            
+        Returns:
+            map_pcd: (N, 2) array of occupied cell coordinates, or None
+        """
+        # Snap to cache grid
+        grid_x = int(round(x / self.map_cache_resolution))
+        grid_y = int(round(y / self.map_cache_resolution))
+        
+        # Round radius to nearest 0.5m to increase cache hits
+        cache_radius = round(radius * 2) / 2  # 8.0 -> 8.0, 8.3 -> 8.5
+        
+        cache_key = (grid_x, grid_y, cache_radius)
+        
+        # Check cache
+        if cache_key in self.map_cache:
+            return self.map_cache[cache_key]
+        
+        # Cache miss - extract from map
+        # Use grid center for extraction (not exact x, y)
+        center_x = grid_x * self.map_cache_resolution
+        center_y = grid_y * self.map_cache_resolution
+        
+        map_pcd = self.extract_map_points_around_pose(center_x, center_y, cache_radius)
+        
+        # Store in cache
+        self.map_cache[cache_key] = map_pcd
+        
+        # Enforce cache size limit (LRU-like behavior)
+        if len(self.map_cache) > self.map_cache_max_size:
+            # Remove oldest entry (first key in dict)
+            # In Python 3.7+, dicts maintain insertion order
+            oldest_key = next(iter(self.map_cache))
+            del self.map_cache[oldest_key]
+        
+        return map_pcd
 
 
 def main(args=None):
