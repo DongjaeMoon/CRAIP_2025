@@ -41,15 +41,16 @@ def generate_launch_description():
     # 2. [추가됨] Goal Aligner (Python Script)
     # CMakeLists.txt에서 install(PROGRAMS ...)로 설치했으므로
     # executable 이름에 .py까지 적어주면 실행됩니다.
+    '''
     goal_aligner_node = Node(
         package='path_tracker',
         executable='goal_aligner.py',  # .py 확장자 포함 중요!
         name='goal_aligner',
         output='screen',
         emulate_tty=True
-    )
+    )'''
 
     return LaunchDescription([
-        path_tracker_node,
-        goal_aligner_node
+        path_tracker_node
+        #goal_aligner_node
     ])

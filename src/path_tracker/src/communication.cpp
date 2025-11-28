@@ -36,10 +36,10 @@ void PathTracker::_LocalizationCallback(const geometry_msgs::msg::PoseStamped::S
     _trans.SetOrient(msg->pose.orientation);
     
     // Check if this is the first call
-    RCLCPP_INFO(get_logger(), "=== Localization Callback ===");
-    RCLCPP_INFO(get_logger(), "  Previous pose initialized: %s", (_prev_pose_initialized ? "true" : "false"));
-    RCLCPP_INFO(get_logger(), "  Current position: (%.3f, %.3f, %.3f)", msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
-    RCLCPP_INFO(get_logger(), "  Header stamp: %d.%09d", msg->header.stamp.sec, msg->header.stamp.nanosec);
+    //RCLCPP_INFO(get_logger(), "=== Localization Callback ===");
+    //RCLCPP_INFO(get_logger(), "  Previous pose initialized: %s", (_prev_pose_initialized ? "true" : "false"));
+    //RCLCPP_INFO(get_logger(), "  Current position: (%.3f, %.3f, %.3f)", msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+    //RCLCPP_INFO(get_logger(), "  Header stamp: %d.%09d", msg->header.stamp.sec, msg->header.stamp.nanosec);
     
     // Calculate twist from pose changes
     geometry_msgs::msg::Twist calculated_twist = _CalculateTwistFromPose(msg);
@@ -281,12 +281,12 @@ geometry_msgs::msg::Twist PathTracker::_CalculateTwistFromPose(
     const double dt = (curr - _prev_timestamp).seconds();
     
     // 시간 변화 디버그 출력 추가
-    RCLCPP_INFO(get_logger(), "=== Twist 계산 디버그 ===");
-    RCLCPP_INFO(get_logger(), "  현재 시간: %.6f 초", curr.seconds());
-    RCLCPP_INFO(get_logger(), "  이전 시간: %.6f 초", _prev_timestamp.seconds());
-    RCLCPP_INFO(get_logger(), "  시간 차이 (dt): %.6f 초", dt);
-    RCLCPP_INFO(get_logger(), "  현재 위치: (%.3f, %.3f, %.3f)", msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
-    RCLCPP_INFO(get_logger(), "  이전 위치: (%.3f, %.3f, %.3f)", _prev_pose.pose.position.x, _prev_pose.pose.position.y, _prev_pose.pose.position.z);
+    //RCLCPP_INFO(get_logger(), "=== Twist 계산 디버그 ===");
+    //RCLCPP_INFO(get_logger(), "  현재 시간: %.6f 초", curr.seconds());
+    //RCLCPP_INFO(get_logger(), "  이전 시간: %.6f 초", _prev_timestamp.seconds());
+    //RCLCPP_INFO(get_logger(), "  시간 차이 (dt): %.6f 초", dt);
+    //RCLCPP_INFO(get_logger(), "  현재 위치: (%.3f, %.3f, %.3f)", msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+    //RCLCPP_INFO(get_logger(), "  이전 위치: (%.3f, %.3f, %.3f)", _prev_pose.pose.position.x, _prev_pose.pose.position.y, _prev_pose.pose.position.z);
 
     // dt 가드 (역행/정지/이상치)
     if (!std::isfinite(dt) || dt <= 0.0 || dt < 1e-6 || dt > 1.0) {
@@ -313,8 +313,8 @@ geometry_msgs::msg::Twist PathTracker::_CalculateTwistFromPose(
     twist.linear.y = robot_velocity.y();
     twist.linear.z = robot_velocity.z();
     
-    RCLCPP_INFO(get_logger(), "  위치 변화: dx=%.6f, dy=%.6f, dz=%.6f", dx, dy, dz);
-    RCLCPP_INFO(get_logger(), "  계산된 선속도: vx=%.6f, vy=%.6f, vz=%.6f", twist.linear.x, twist.linear.y, twist.linear.z);
+    //RCLCPP_INFO(get_logger(), "  위치 변화: dx=%.6f, dy=%.6f, dz=%.6f", dx, dy, dz);
+    //RCLCPP_INFO(get_logger(), "  계산된 선속도: vx=%.6f, vy=%.6f, vz=%.6f", twist.linear.x, twist.linear.y, twist.linear.z);
 
     // 각속도 (yaw 래핑 처리)
     const double cy = _GetYawFromQuaternion(msg->pose.orientation);
@@ -324,11 +324,11 @@ geometry_msgs::msg::Twist PathTracker::_CalculateTwistFromPose(
     if (dyaw < -M_PI) dyaw += 2*M_PI;
     twist.angular.z = dyaw / dt;
     
-    RCLCPP_INFO(get_logger(), "  현재 yaw: %.6f rad", cy);
-    RCLCPP_INFO(get_logger(), "  이전 yaw: %.6f rad", py);
-    RCLCPP_INFO(get_logger(), "  yaw 변화: %.6f rad", dyaw);
-    RCLCPP_INFO(get_logger(), "  계산된 각속도: wz=%.6f rad/s", twist.angular.z);
-    RCLCPP_INFO(get_logger(), "=========================");
+    //RCLCPP_INFO(get_logger(), "  현재 yaw: %.6f rad", cy);
+    //RCLCPP_INFO(get_logger(), "  이전 yaw: %.6f rad", py);
+    //RCLCPP_INFO(get_logger(), "  yaw 변화: %.6f rad", dyaw);
+    //RCLCPP_INFO(get_logger(), "  계산된 각속도: wz=%.6f rad/s", twist.angular.z);
+    //RCLCPP_INFO(get_logger(), "=========================");
 
     _prev_pose = *msg;
     _prev_timestamp = curr;

@@ -241,19 +241,102 @@ void PathTracker::MainLoop() {
         _CheckForward();
 
         if (_path.size() < 2) {
-            throw CustomException::ErrorType::NotImplementedPath;
+            //throw CustomException::ErrorType::NotImplementedPath;
+            return;
         }
+        // A. 목표까지 거리 계산
+        double dx = _path.back().x - _state.x;
+        double dy = _path.back().y - _state.y;
+        double dist_to_goal = std::sqrt(dx*dx + dy*dy);
+
+        // B. 20cm 이내 진입 시: MPPI 알고리즘을 건너뛰고 "제자리 회전 모드"로 진입
+        if (dist_to_goal <= 0.20) {
+            
+            // 1. 목표 각도와의 오차 계산
+            double target_yaw = _path.back().yaw;
+            double current_yaw = _state.yaw;
+            double yaw_diff = target_yaw - current_yaw;
+
+            // 각도 정규화 (-PI ~ PI)
+            while (yaw_diff > M_PI) yaw_diff -= 2.0 * M_PI;
+            while (yaw_diff < -M_PI) yaw_diff += 2.0 * M_PI;
+
+            // 2. 각도가 틀어져 있다면? -> 제자리 회전 명령 수행
+            if (std::abs(yaw_diff) > 0.05) { // 0.05 rad (약 3도) 이상 차이나면 회전
+                geometry_msgs::msg::Twist rotate_cmd;
+                rotate_cmd.linear.x = 0.0;   // 직진 절대 금지
+                rotate_cmd.linear.y = 0.0;
+                
+                // P-제어 (오차에 비례하여 회전 속도 조절)
+                double ang_vel = yaw_diff * 1.5;
+                
+                // 속도 제한 (너무 빠르면 무서우니 Max 0.6으로 제한)
+                rotate_cmd.angular.z = std::max(std::min(ang_vel, 0.6), -0.6);
+                
+                // 회전 명령 발행
+                _twist_pub->publish(rotate_cmd);
+                
+                // [중요] MPPI 로직이 실행되지 않도록 여기서 함수 종료!
+                return; 
+            } 
+            // 3. 거리도 맞고(20cm 이내), 각도도 맞았다면(3도 이내)? -> 진짜 도착!
+            else {
+                std::cout << "SUCCESS: Goal Reached & Aligned!" << std::endl;
+                PubZeroAction(); // 정지 명령(0,0) 전송
+                _path.clear();   // 경로 삭제 (이제 로봇은 멈춤 상태가 됨)
+                return;
+            }
+        }
+        // ==================================================================================
+
+        // 20cm 밖이라면 원래대로 MPPI 주행 로직 실행 (건드리지 않음)
+        // (이 아래 코드는 로봇이 멀리 있을 때만 실행됩니다)
 
         const auto is_goal = _IsGoal();
         if (is_goal) {
+            /*
             _path.clear();
-            throw CustomException::ErrorType::GoalArrived;
+            double target_yaw = _path.back().yaw;
+            double current_yaw = _state.yaw;
+            double yaw_diff = target_yaw - current_yaw;
+
+            // 각도 정규화 (-PI ~ PI)
+            while (yaw_diff > M_PI) yaw_diff -= 2.0 * M_PI;
+            while (yaw_diff < -M_PI) yaw_diff += 2.0 * M_PI;
+
+            // B. 각도가 틀어져 있다면? -> 제자리 회전 명령
+            if (std::abs(yaw_diff) > 0.05) { // 0.05 rad (약 3도) 이상 차이나면 회전
+                geometry_msgs::msg::Twist rotate_cmd;
+                rotate_cmd.linear.x = 0.0; // 직진 금지
+                
+                // P-제어 (너무 빠르지 않게 0.6으로 제한)
+                double ang_vel = yaw_diff * 1.5;
+                rotate_cmd.angular.z = std::max(std::min(ang_vel, 0.6), -0.6);
+                
+                _twist_pub->publish(rotate_cmd);
+                
+                // 로그 출력 (도배 방지용으로 필요하면 주석 처리)
+                // std::cout << "Auto Aligning... Diff: " << yaw_diff << std::endl;
+                
+                return; // [중요] MPPI 계산 못하게 여기서 함수 종료!
+            } 
+            // C. 각도도 맞았다면? -> 진짜 도착! 정지!
+            else {
+                std::cout << "Creating Robot AI: Goal Reached & Aligned!" << std::endl;
+                PubZeroAction(); // 0,0 명령 전송
+                _path.clear();   // 경로 삭제 (이제 NotImplementedPath 상태로 대기)
+                return;
+            }*/
+            //throw CustomException::ErrorType::GoalArrived;
+            _path.clear();
+            return;
         }
 
         const auto cte = GetCTE();
         PubTrackingInfo(cte);
         if (cte > _tracking_thres) {
-            throw CustomException::ErrorType::NotFoundTargetPath;
+            //throw CustomException::ErrorType::NotFoundTargetPath;
+            return;
         }
 
         auto path_segment = _GetLocalPathSegment(_state);
@@ -630,9 +713,9 @@ void PathTracker::_UpdateState() {
     auto new_state = _trans.GetState(pos, orient, twist);
     
     // Output velocity
-    std::cout << "Current velocity: " << twist.linear.x << " m/s, angular.z: " << twist.angular.z << " rad/s" << std::endl;
-    std::cout << "  - pose: (" << pos.x << ", " << pos.y << ", " << pos.z << ")" << std::endl;
-    std::cout << "  - twist original: linear.x=" << twist.linear.x << ", angular.z=" << twist.angular.z << std::endl;
+    //std::cout << "Current velocity: " << twist.linear.x << " m/s, angular.z: " << twist.angular.z << " rad/s" << std::endl;
+    //std::cout << "  - pose: (" << pos.x << ", " << pos.y << ", " << pos.z << ")" << std::endl;
+    //std::cout << "  - twist original: linear.x=" << twist.linear.x << ", angular.z=" << twist.angular.z << std::endl;
     
     auto distance = _state.GetDistance(new_state);
 
@@ -926,7 +1009,21 @@ double PathTracker::GetCTE() {
 }
 
 bool PathTracker::_IsGoal() {
-    return std::abs(static_cast<int>(_path.size()) - 1 - _target_ind) <= _goal_thres;
+    //수정
+    if (_path.empty()) return true;
+
+    // 1. 목표 지점(경로의 끝)까지의 물리적 거리 계산
+    //double dx = _state.x - _path.back().x;
+    //double dy = _state.y - _path.back().y;
+    //double dist = std::sqrt(dx*dx + dy*dy);
+
+    // 2. 거리가 10cm 이내면 도착한 것으로 간주하고 True 반환 (MPPI 종료!)
+    //if (dist <= 0.05) {
+    //    return true;
+    //}
+    return false;
+    //기존꺼 남겨둠
+    //return std::abs(static_cast<int>(_path.size()) - 1 - _target_ind) <= _goal_thres;
 }
 
 void PathTracker::ResetPathTracker() {

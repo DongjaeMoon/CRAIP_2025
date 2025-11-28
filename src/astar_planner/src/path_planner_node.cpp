@@ -124,8 +124,32 @@ private:
       double goal_dx = current_pose_.pose.position.x - goal_pose_.pose.position.x;
       double goal_dy = current_pose_.pose.position.y - goal_pose_.pose.position.y;
       double goal_distance = std::sqrt(goal_dx * goal_dx + goal_dy * goal_dy);
-      
-      if (goal_distance < 0.3) {  // Goal reached threshold
+      /*
+      // [수정] 목표 도달 시 상세 정보 출력
+      if (goal_reached_) {
+        // 각도(Yaw) 계산
+          double target_yaw = getYaw(goal_pose_.pose.orientation);
+          double current_yaw = getYaw(current_pose_.pose.orientation);
+          
+          RCLCPP_INFO(this->get_logger(), "✓ Goal Reached!");
+          
+          // 요청하신 비교 로그 출력 (보기 좋게 정렬)
+          RCLCPP_INFO(this->get_logger(), 
+            "  [Target] x: %.3f, y: %.3f, yaw: %.3f (rad)", 
+            goal_pose_.pose.position.x, goal_pose_.pose.position.y, target_yaw);
+            
+          RCLCPP_INFO(this->get_logger(), 
+            "  [Actual] x: %.3f, y: %.3f, yaw: %.3f (rad)", 
+            current_pose_.pose.position.x, current_pose_.pose.position.y, current_yaw);
+            
+          RCLCPP_INFO(this->get_logger(), 
+            "  [Error] distance: %.3f, dyaw: %.3f", 
+            goal_distance, target_yaw - current_yaw);
+      }
+      return;  // Don't replan if goal is reached
+      */
+      ///*
+      if (goal_distance < 0.55) {  // Goal reached threshold
         if (!goal_reached_) { // [수정] 목표 도달 시 상세 정보 출력
           // 각도(Yaw) 계산
           double target_yaw = getYaw(goal_pose_.pose.orientation);
@@ -241,9 +265,25 @@ private:
       pose.pose.position.z = 0.0;
       // [수정 전] 무조건 0도(w=1.0)를 보라고 되어 있었음 -> MPPI가 이것만 추종함
       // pose.pose.orientation.w = 1.0; 
-
-      // [수정 후] 마지막 점이면 '목표 각도'를 넣고, 아니면 진행 방향을 넣거나 0도로 둠
+      /*
+      // [핵심 수정] 마지막 점은 Goal Yaw, 중간 점은 진행 방향(atan2)을 보게 함
       if (i == path_cells.size() - 1) {
+          // 마지막 점: 사용자가 지정한 목표 각도
+          pose.pose.orientation = goal_pose_.pose.orientation;
+      } else {
+          // 중간 점: 다음 점을 바라보도록 각도 계산
+          double yaw = 0.0;
+          if (i + 1 < path_cells.size()) {
+              auto next_pos = gridToWorld(path_cells[i+1].x, path_cells[i+1].y);
+              yaw = std::atan2(next_pos.second - world_pos.second, next_pos.first - world_pos.first);
+          } else {
+              // (예외 처리) 혹시 다음 점이 없으면 목표 각도 사용
+              yaw = getYaw(goal_pose_.pose.orientation);
+          }
+          pose.pose.orientation.z = std::sin(yaw / 2.0);
+          pose.pose.orientation.w = std::cos(yaw / 2.0);
+      }*/
+     if (i == path_cells.size() - 1) {
           // 마지막 점: 사용자가 Rviz에서 지정한 Goal Orientation 적용!
           pose.pose.orientation = goal_pose_.pose.orientation;
       } else {

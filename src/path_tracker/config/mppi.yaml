@@ -29,7 +29,7 @@ path_tracker:
     Q: [40.0, 40.0, 30.0, 10.0]
     
     # Terminal state cost matrix weights [x, y, velocity, yaw]
-    Qf: [5.0, 5.0, 30.0, 10.0]
+    Qf: [20.0, 20.0, 30.0, 5.0]
     
     # Control input cost matrix weights [linear_vel, angular_vel]
     R: [1.0, 3.0]
@@ -41,7 +41,7 @@ path_tracker:
     use_const: false    
     const_thres: 0.5
     tracking_thres: 5.0
-    goal_thres: 0.10    
+    goal_thres: 0.05    
     
     # ===========================================================================
     # Path Tracking Parameters
@@ -50,7 +50,7 @@ path_tracker:
     target_speed: 0.7            # Target forward speed (m/s)
     n_ind_search: 30             # Number of indices to search for nearest path point
     tracking_thres: 5.0          # Maximum tracking error threshold (m)
-    goal_thres: 0.5              # Goal reached threshold (m)
+    goal_thres: 0.05              # Goal reached threshold (m)
     
     preserved_path: true         # Keep path after goal is reached
     
@@ -62,7 +62,7 @@ path_tracker:
     Order: 1                     # Regressor order
     Lamb: 0.0001                 # Smoothing parameter
     Window: 10                   # Window size for local regression
-    Knot: 9                      # Number of knots for spline
+    Knot: 3                      # Number of knots for spline
     
     # ===========================================================================
     # Robot Physical Parameters (Unitree GO1)

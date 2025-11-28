@@ -22,7 +22,7 @@ class GoalAligner(Node):
         self.timer = self.create_timer(0.02, self.control_loop) 
         
         # 파라미터
-        self.ARRIVE_DIST = 0.30   # 20cm 이내면 도착으로 간주
+        self.ARRIVE_DIST = 0.50   # 20cm 이내면 도착으로 간주
         self.ALIGN_TOLERANCE = 0.05 # 3도 이내면 정렬 완료
 
         self.is_aligning = False
@@ -82,6 +82,15 @@ class GoalAligner(Node):
                     stop_msg = Twist()
                     self.cmd_pub.publish(stop_msg)
                     self.get_logger().info("SUCCESS: Aligned & Finished!")
+                    self.get_logger().info(
+                        f"  [Goal] x: {self.goal_pose.pose.position.x:.3f}, y: {self.goal_pose.pose.position.y:.3f}, yaw: {goal_yaw:.3f} rad"
+                    )
+                    self.get_logger().info(
+                        f"  [Curr] x: {self.current_pose.pose.position.x:.3f}, y: {self.current_pose.pose.position.y:.3f}, yaw: {curr_yaw:.3f} rad"
+                    )
+                    self.get_logger().info(
+                        f"  [Err ] dist: {dist:.3f} m, yaw_diff: {diff:.3f} rad"
+                    )
                     self.is_aligning = False
 
 def main(args=None):
