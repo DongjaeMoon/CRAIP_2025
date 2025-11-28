@@ -66,6 +66,14 @@ private:
   
   // Heuristic function (Euclidean distance)
   double calculateHeuristic(const GridCell& a, const GridCell& b) const;
+
+  // [추가] 미리 계산된 페널티 값을 저장할 2차원 배열
+  std::vector<std::vector<double>> cost_map_;
+
+  // [추가] 비용 지도를 생성하는 내부 함수
+  void buildCostMap();
+
+  double getPenalty(int x, int y) const;
   
   // Check if cell is valid (within bounds and not an obstacle)
   bool isValid(const GridCell& cell) const;
