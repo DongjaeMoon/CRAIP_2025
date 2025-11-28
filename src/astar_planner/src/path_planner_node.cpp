@@ -55,6 +55,15 @@ public:
   }
 
 private:
+  // [추가] 쿼터니언을 Yaw(라디안) 각도로 변환하는 헬퍼 함수
+  double getYaw(const geometry_msgs::msg::Quaternion & q)
+  {
+    // Roll-Pitch-Yaw 중 Yaw(z축 회전)만 계산
+    double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+    double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+    return std::atan2(siny_cosp, cosy_cosp);
+  }
+
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
   {
     map_msg_ = msg;
@@ -104,7 +113,7 @@ private:
     double distance = std::sqrt(dx * dx + dy * dy);
     
     // Only replan if position changed significantly (moved to new grid cell)
-    if (distance < 0.01) {  // Threshold for considering position unchanged
+    if (distance < 0.5) {  // Threshold for considering position unchanged
       return;
     }
     
@@ -116,9 +125,26 @@ private:
       double goal_dy = current_pose_.pose.position.y - goal_pose_.pose.position.y;
       double goal_distance = std::sqrt(goal_dx * goal_dx + goal_dy * goal_dy);
       
-      if (goal_distance < 0.5) {  // Goal reached threshold
-        if (!goal_reached_) {
-          RCLCPP_INFO(this->get_logger(), "✓ Goal reached!");
+      if (goal_distance < 0.3) {  // Goal reached threshold
+        if (!goal_reached_) { // [수정] 목표 도달 시 상세 정보 출력
+          // 각도(Yaw) 계산
+          double target_yaw = getYaw(goal_pose_.pose.orientation);
+          double current_yaw = getYaw(current_pose_.pose.orientation);
+          
+          RCLCPP_INFO(this->get_logger(), "✓ Goal Reached!");
+          
+          // 요청하신 비교 로그 출력 (보기 좋게 정렬)
+          RCLCPP_INFO(this->get_logger(), 
+            "  [Target] x: %.3f, y: %.3f, yaw: %.3f (rad)", 
+            goal_pose_.pose.position.x, goal_pose_.pose.position.y, target_yaw);
+            
+          RCLCPP_INFO(this->get_logger(), 
+            "  [Actual] x: %.3f, y: %.3f, yaw: %.3f (rad)", 
+            current_pose_.pose.position.x, current_pose_.pose.position.y, current_yaw);
+            
+          RCLCPP_INFO(this->get_logger(), 
+            "  [Error ] dx: %.3f, dy: %.3f, dyaw: %.3f", 
+            goal_dx, goal_dy, target_yaw - current_yaw);
           goal_reached_ = true;
         }
         return;  // Don't replan if goal is reached
@@ -213,7 +239,20 @@ private:
       pose.pose.position.x = world_pos.first;
       pose.pose.position.y = world_pos.second;
       pose.pose.position.z = 0.0;
-      pose.pose.orientation.w = 1.0;
+      // [수정 전] 무조건 0도(w=1.0)를 보라고 되어 있었음 -> MPPI가 이것만 추종함
+      // pose.pose.orientation.w = 1.0; 
+
+      // [수정 후] 마지막 점이면 '목표 각도'를 넣고, 아니면 진행 방향을 넣거나 0도로 둠
+      if (i == path_cells.size() - 1) {
+          // 마지막 점: 사용자가 Rviz에서 지정한 Goal Orientation 적용!
+          pose.pose.orientation = goal_pose_.pose.orientation;
+      } else {
+          // 중간 점: 그냥 0도로 두거나, 다음 점을 바라보게 계산 가능 (여기선 0도로 유지해도 무방)
+          pose.pose.orientation.w = 1.0; 
+          pose.pose.orientation.x = 0.0;
+          pose.pose.orientation.y = 0.0;
+          pose.pose.orientation.z = 0.0;
+      }
       
       path_msg.poses.push_back(pose);
     }
@@ -296,17 +335,17 @@ private:
     marker.header.stamp = this->now();
     marker.ns = "goal";
     marker.id = 0;
-    marker.type = visualization_msgs::msg::Marker::SPHERE;
+    marker.type = visualization_msgs::msg::Marker::ARROW;
     marker.action = visualization_msgs::msg::Marker::ADD;
     
     marker.pose.position.x = goal_pose_.pose.position.x;
     marker.pose.position.y = goal_pose_.pose.position.y;
     marker.pose.position.z = 0.5;
-    marker.pose.orientation.w = 1.0;
+    marker.pose.orientation = goal_pose_.pose.orientation;
     
-    marker.scale.x = 0.8;
-    marker.scale.y = 0.8;
-    marker.scale.z = 0.8;
+    marker.scale.x = 0.5;
+    marker.scale.y = 0.1;
+    marker.scale.z = 0.1;
     
     marker.color.r = 0.0;
     marker.color.g = 0.0;
@@ -349,4 +388,3 @@ int main(int argc, char * argv[])
   rclcpp::shutdown();
   return 0;
 }
-

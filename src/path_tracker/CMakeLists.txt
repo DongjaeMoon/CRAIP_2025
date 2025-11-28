@@ -73,6 +73,14 @@ install(DIRECTORY
 
 ament_python_install_package(${PROJECT_NAME})
 
+# [추가]
+# scripts 폴더에 만든 goal_aligner.py를 설치하라는 명령
+install(
+  PROGRAMS
+    scripts/goal_aligner.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(
   PROGRAMS
     path_tracker/move_go1.py
