@@ -1,0 +1,13 @@
+material circle_sign
+{
+  technique
+  {
+    pass
+    {
+      texture_unit
+      {
+        texture ../textures/circle_sign_texture.png
+      }
+    }
+  }
+}
