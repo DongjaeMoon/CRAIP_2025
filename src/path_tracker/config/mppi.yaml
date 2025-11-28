@@ -47,7 +47,7 @@ path_tracker:
     # Path Tracking Parameters
     # ===========================================================================
     
-    target_speed: 0.75            # Target forward speed (m/s)
+    target_speed: 0.7            # Target forward speed (m/s)
     n_ind_search: 30             # Number of indices to search for nearest path point
     tracking_thres: 5.0          # Maximum tracking error threshold (m)
     goal_thres: 0.5              # Goal reached threshold (m)
@@ -72,7 +72,7 @@ path_tracker:
     wheelRadius: 0.1785          # Effective wheel radius (m)
     wheelBase: 0.512             # Distance between front and rear (m)
     
-    maxLinVel: 0.75               # Maximum linear velocity (m/s) 
+    maxLinVel: 0.7               # Maximum linear velocity (m/s) 
     maxAngVel: 1.0              # Maximum angular velocity (rad/s)
     #DJ's comment_11.22 : maxAngVel, maxLinVel modified needed, always care about this.
 
