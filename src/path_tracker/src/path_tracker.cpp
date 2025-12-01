@@ -240,17 +240,18 @@ void PathTracker::MainLoop() {
 
         _CheckForward();
 
-        if (_path.size() < 2) {
-            //throw CustomException::ErrorType::NotImplementedPath;
+        // [수정 1] 경로가 아예 없으면 아무것도 안 함
+        if (_path.empty()) {
             return;
         }
+
         // A. 목표까지 거리 계산
         double dx = _path.back().x - _state.x;
         double dy = _path.back().y - _state.y;
         double dist_to_goal = std::sqrt(dx*dx + dy*dy);
 
         // B. 20cm 이내 진입 시: MPPI 알고리즘을 건너뛰고 "제자리 회전 모드"로 진입
-        if (dist_to_goal <= 0.20) {
+        if (dist_to_goal <= 0.05) {
             
             // 1. 목표 각도와의 오차 계산
             double target_yaw = _path.back().yaw;
@@ -288,6 +289,12 @@ void PathTracker::MainLoop() {
             }
         }
         // ==================================================================================
+
+        if (_path.size() < 2) {
+            //throw CustomException::ErrorType::NotImplementedPath;
+            return;
+        }
+        
 
         // 20cm 밖이라면 원래대로 MPPI 주행 로직 실행 (건드리지 않음)
         // (이 아래 코드는 로봇이 멀리 있을 때만 실행됩니다)
@@ -797,8 +804,43 @@ std::vector<Action> PathTracker::_GetWeightedNoise(const std::vector<double>& we
     return weighted_noise;
 }
 
-std::vector<double> PathTracker::_GetCost(const std::vector<PathStamp>& ref, const std::vector<std::vector<Action>>& noise) {
+std::vector<double> PathTracker::_GetCost(const std::vector<PathStamp>& ref_in, const std::vector<std::vector<Action>>& noise) {
     
+    // 1. 원본 경로(ref_in)를 복사해서 수정 가능한 'ref' 변수를 만듭니다.
+    std::vector<PathStamp> ref = ref_in;
+
+    // 2. [추가된 로직] 점 개수가 부족하면 강제로 늘려줍니다 (Interpolation)
+    // Regressor가 계산하기 위해 필요한 최소 개수(안전하게 5개)가 될 때까지 점 사이를 쪼갭니다.
+    while (ref.size() < 5 || !_path_reg->CheckDOF(ref.size())) {
+        if (ref.empty()) break; 
+
+        if (ref.size() == 1) {
+            // 점이 1개뿐이면 똑같은 점을 하나 더 추가해서 선을 만듦
+            ref.push_back(ref.back());
+        } else {
+            // 점과 점 사이에 중간점(Interpolation)을 추가하여 개수를 뻥튀기
+            std::vector<PathStamp> new_ref;
+            new_ref.reserve(ref.size() * 2);
+            for (size_t i = 0; i < ref.size() - 1; ++i) {
+                new_ref.push_back(ref[i]);
+                
+                PathStamp mid;
+                mid.x = (ref[i].x + ref[i+1].x) / 2.0;
+                mid.y = (ref[i].y + ref[i+1].y) / 2.0;
+                mid.z = (ref[i].z + ref[i+1].z) / 2.0;
+                mid.yaw = (ref[i].yaw + ref[i+1].yaw) / 2.0; 
+                mid.gear = ref[i].gear;
+                
+                new_ref.push_back(mid);
+            }
+            new_ref.push_back(ref.back());
+            ref = new_ref; // 늘어난 경로로 업데이트
+        }
+        
+        if (ref.size() > 50) break; // 무한루프 방지용 안전장치
+    }
+    // ==========================================================
+
     State local_state = _state.GetLocalState();
 
     std::vector<double> sample_costs;
