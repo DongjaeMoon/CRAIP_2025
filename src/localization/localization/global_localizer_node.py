@@ -29,7 +29,7 @@ from utils import (
     pose_to_matrix,
     transform_to_matrix,
     build_likelihood_field_from_map,
-    compute_scan_log_likelihood,
+    compute_scan_log_likelihood_endpoint_model,
     scan_to_pcd,
     icp_2d,
 )
@@ -244,13 +244,12 @@ class GlobalLocalizerNode(Node):
 
         # 6) Best particle
         # best_p = max(self.particles, key=lambda p: p.weight)
-        # self.T_map_to_base = self.matrix_from_pose_2d(best_p.x, best_p.y, best_p.yaw)
+        # T_map_to_base = self.matrix_from_pose_2d(best_p.x, best_p.y, best_p.yaw)
 
         # or use smoothed pose
         pose = self.get_smoothed_pose()
         if pose is None:
             return
-        
         smooth_x, smooth_y, smooth_yaw = pose
         T_map_to_base = self.matrix_from_pose_2d(smooth_x, smooth_y, smooth_yaw)
 
@@ -300,9 +299,9 @@ class GlobalLocalizerNode(Node):
     # =========================================================
 
     def initialize_particles_from_initial_pose(self):
-        sigma_x = 0.2
-        sigma_y = 0.2
-        sigma_yaw = math.radians(10.0)
+        sigma_x = 0.1
+        sigma_y = 0.1
+        sigma_yaw = math.radians(3.0)
 
         self.particles = []
         for _ in range(self.num_particles):
@@ -313,7 +312,7 @@ class GlobalLocalizerNode(Node):
 
     def pf_prediction(self, dx_odom: float, dy_odom: float, dyaw_odom: float):
         """Motion model"""
-        sigma_trans = 0.08
+        sigma_trans = 0.15
         sigma_rot = math.radians(3.0)
 
         for p in self.particles:
@@ -342,30 +341,29 @@ class GlobalLocalizerNode(Node):
         if N == 0:
             return
 
+        log_weights = []
         for p in self.particles:
-            try:
-                # More accurate but slower
-                correlation = compute_scan_log_likelihood(
-                    p.x, p.y, p.yaw, scan, self.likelihood_field, max_beams=50)
-                p.log_weight = max(1e-10, correlation)
-            except Exception as e:
-                p.log_weight = -20
-        
-        max_log_w = max(p.log_weight for p in self.particles)
-        total_w = 0.0
-        for p in self.particles:
-            w = math.exp(p.log_weight - max_log_w)
-            p.weight = w
-            total_w += w
-
-        if total_w > 0.0:
-            for p in self.particles:
-                p.weight /= total_w
+            log_w = compute_scan_log_likelihood_endpoint_model(p.x, p.y, p.yaw, scan, self.likelihood_field)
+            log_weights.append(log_w)
+            
+        # Log-Sum-Exp Trick for numerical stability
+        max_log_w = max(log_weights)
+        weights = []
+        for lw in log_weights:
+            weights.append(math.exp(lw - max_log_w))
+            
+        # Normalize
+        total_w = sum(weights)
+        if total_w > 1e-9:
+            for i, p in enumerate(self.particles):
+                p.weight = weights[i] / total_w
         else:
-            # degenerate case: reset to uniform
-            n = len(self.particles)
+            # Recovery: If all particles have 0 probability, add random noise
+            self.get_logger().warn("Particle Filter Lost! Adding noise.")
             for p in self.particles:
-                p.weight = 1.0 / n
+                p.weight = 1.0 / self.num_particles
+                p.x += np.random.normal(0, 0.2)
+                p.y += np.random.normal(0, 0.2)
 
         self.icp_counter += 1
         if self.icp_counter >= self.icp_every_n_updates:

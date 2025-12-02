@@ -400,31 +400,12 @@ def compute_scan_log_likelihood_endpoint_model(
     particle_yaw: float,
     scan: LaserScan,
     likelihood_field: Dict[str, Any],
-    max_beams: int = 60,
-    sigma_hit: float = 0.2,
-    z_hit: float = 0.8,
-    z_rand: float = 0.2,
+    max_beams: int = 60
 ) -> float:
     """
-    Compute log-likelihood of scan measurement given particle pose using endpoint model.
-    
-    This is the MCL sensor model that compares laser endpoints to the likelihood field.
-
-    Args:
-        particle_x, particle_y, particle_yaw: Particle pose in map frame
-        scan: LaserScan message
-        likelihood_field: Pre-computed distance field from build_likelihood_field_from_map()
-        max_beams: Maximum number of beams to use (for speed), None for all
-        sigma_hit: Sensor noise standard deviation [m]
-        z_hit: Weight of "hit" component in mixture model
-        z_rand: Weight of random measurement component
-        
-    Returns:
-        log_likelihood: Log p(scan | particle_pose) for this particle
-        
-    Note: Assumes laser is at robot origin. If laser has offset, transform outside this function.
+    Robust Endpoint Model.
+    Returns: Log-Likelihood (Negative values are expected!)
     """
-
     dist_field = likelihood_field["distance"]
     origin_x = likelihood_field["origin_x"]
     origin_y = likelihood_field["origin_y"]
@@ -435,84 +416,79 @@ def compute_scan_log_likelihood_endpoint_model(
     ranges = np.array(scan.ranges, dtype=float)
     angle_min = scan.angle_min
     angle_inc = scan.angle_increment
-    r_min = scan.range_min
     r_max = scan.range_max
-
-    # Subsample beams if requested for computational efficiency
+    
     n_beams = len(ranges)
-    # if max_beams is not None and max_beams > 0 and max_beams < n_beams:
-    #     step = max(1, n_beams // max_beams)
-    #     indices = range(0, n_beams, step)
-    # else:
-    #     indices = range(n_beams)
-
-    if max_beams >= n_beams:
-        indices = range(n_beams)
+    
+    # Random downsampling to avoid aliasing (better than fixed stride)
+    if max_beams and max_beams < n_beams:
+        step = int(n_beams / max_beams)
+        indices = np.arange(0, n_beams, step)
     else:
-        bins = np.array_split(np.arange(n_beams), max_beams)
-        indices = [np.random.choice(bin) for bin in bins if len(bin) > 0]
+        indices = np.arange(n_beams)
 
-    log_w = 0.0
-    valid_count = 0
+    # Tuning Parameters
+    z_hit = 0.95
+    z_rand = 0.05
+    sigma_hit = 0.2  # Meters
+    max_dist = 2.0   # Truncate distance for likelihood
 
-    # Precompute trig values for particle pose (minor optimization)
-    cos_yaw = math.cos(particle_yaw)
-    sin_yaw = math.sin(particle_yaw)
+    log_likelihood_sum = 0.0
+    valid_rays = 0
+    
+    # Precompute trig
+    c_yaw = math.cos(particle_yaw)
+    s_yaw = math.sin(particle_yaw)
 
     for i in indices:
         r = ranges[i]
-        # Skip invalid measurements
-        if not np.isfinite(r):
+        if not np.isfinite(r) or r >= r_max:
             continue
-        if r < r_min or r > r_max:
-            continue
-
-        # Beam angle in robot frame
+            
+        # Beam endpoint in robot frame
         angle = angle_min + i * angle_inc
+        c_a = math.cos(angle)
+        s_a = math.sin(angle)
+        
+        lx = r * c_a
+        ly = r * s_a
+        
+        # Transform to map frame
+        wx = particle_x + (c_yaw * lx - s_yaw * ly)
+        wy = particle_y + (s_yaw * lx + c_yaw * ly)
+        
+        cell = world_to_map(wx, wy, origin_x, origin_y, resolution, width, height)
+        
+        dist = max_dist # Default penalty
+        if cell:
+            mx, my = cell
+            dist = float(dist_field[my, mx])
+        
+        # Clamp distance
+        if dist > max_dist:
+            dist = max_dist
 
-        # Endpoint in robot (laser) frame
-        cos_angle = math.cos(angle)
-        sin_angle = math.sin(angle)
-        x_l = r * cos_angle
-        y_l = r * sin_angle
+        # Gaussian Probability
+        # p_hit = (1 / (sigma * sqrt(2pi))) * exp(...)
+        # We ignore the constant factor as it cancels out in normalization usually, 
+        # but for log-likelihood mixing we need to be careful.
+        # Simplified Gaussian Score:
+        prob_hit = math.exp(-0.5 * (dist * dist) / (sigma_hit * sigma_hit))
+        
+        # Mixture model
+        # p = z_hit * p_hit + z_rand * (1/max_range)
+        # Assuming uniform random noise floor
+        prob = z_hit * prob_hit + z_rand * 0.05 
+        
+        # Log-Likelihood
+        log_likelihood_sum += math.log(prob)
+        valid_rays += 1
 
-        # Transform endpoint to world (map) frame using particle pose
-        x_world = particle_x + cos_yaw * x_l - sin_yaw * y_l
-        y_world = particle_y + sin_yaw * x_l + cos_yaw * y_l
+    if valid_rays == 0:
+        return -100.0 # Heavy penalty
 
-        # Convert world coordinates to map indices
-        cell = world_to_map(x_world, y_world, origin_x, origin_y, resolution, width, height)
-        if cell is None:
-            # Beam endpoint outside known map → treat as random measurement
-            p = 0.01
-            log_w += math.log(p)
-            valid_count += 1
-            continue
+    return log_likelihood_sum
 
-        mx, my = cell
-        # Get distance to nearest obstacle (indexing: row=my=y, col=mx=x)
-        dist = float(dist_field[my, mx])
-
-        # Likelihood field endpoint model
-        # p_hit ~ exp(-0.5 * (dist^2 / sigma_hit^2))
-        if sigma_hit <= 0.0:
-            sigma_hit = 0.2
-        p_hit = math.exp(-0.5 * (dist * dist) / (sigma_hit * sigma_hit))
-
-        # Mix with random measurement model
-        # p(z | x) = z_hit * p_hit + z_rand * p_rand
-        # where p_rand = 1 / z_max (uniform over valid range)
-        p = z_hit * p_hit + z_rand * (1.0 / max(r_max, 1e-3))
-        p = max(p, 1e-9)  # Avoid log(0)
-
-        log_w += math.log(p)
-        valid_count += 1
-
-    if valid_count == 0:
-        # No valid beams → extremely low likelihood
-        return -1e9
-
-    return log_w
 
 def compute_scan_log_likelihood(
     particle_x: float,
