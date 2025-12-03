@@ -285,10 +285,10 @@ class GlobalLocalizerNode(Node):
         now = self.get_clock().now()
         try:
             T_odom_from_base = transform_to_matrix(
-                self.tf_buffer.lookup_transform("odom", "base", now.to_msg()).transform
+                self.tf_buffer.lookup_transform("odom", "base", rclpy.time.Time()).transform
             )
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
-            self.get_logger().warn(f"[PF] Could not get odom<-base: {e}", throttle_duration_sec=2.0)
+            self.get_logger().warn(f"[PF] Could not get odom->base: {e}", throttle_duration_sec=2.0)
             return
 
         T_map_to_base = self.T_map_to_odom @ T_odom_from_base

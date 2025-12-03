@@ -38,7 +38,7 @@ public:
       std::bind(&PathPlannerNode::mapCallback, this, std::placeholders::_1));
     
     current_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/go1_pose", 10,
+      "/go1_pose", 1,
       std::bind(&PathPlannerNode::currentPoseCallback, this, std::placeholders::_1));
     
     goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -98,6 +98,7 @@ private:
   
   void currentPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
   {
+    RCLCPP_INFO(this->get_logger(), "Pose callback called!!");
     if (!has_current_pose_) {
       has_current_pose_ = true;
       current_pose_ = *msg;
@@ -210,6 +211,7 @@ private:
   void replanPath()
   {
     if (!has_map_ || !has_current_pose_ || !has_goal_) {
+      RCLCPP_WARN(this->get_logger(), "No map/pose/goal!");
       return;
     }
     
