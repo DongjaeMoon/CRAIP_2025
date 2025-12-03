@@ -251,7 +251,7 @@ void PathTracker::MainLoop() {
         double dist_to_goal = std::sqrt(dx*dx + dy*dy);
 
         // B. 20cm 이내 진입 시: MPPI 알고리즘을 건너뛰고 "제자리 회전 모드"로 진입
-        if (dist_to_goal <= 0.05) {
+        if (dist_to_goal <= 0.30) {
             
             // 1. 목표 각도와의 오차 계산
             double target_yaw = _path.back().yaw;

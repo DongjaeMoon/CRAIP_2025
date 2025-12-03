@@ -265,24 +265,25 @@ private:
       pose.pose.position.z = 0.0;
       // [수정 전] 무조건 0도(w=1.0)를 보라고 되어 있었음 -> MPPI가 이것만 추종함
       // pose.pose.orientation.w = 1.0; 
-      /*
+      
       // [핵심 수정] 마지막 점은 Goal Yaw, 중간 점은 진행 방향(atan2)을 보게 함
       if (i == path_cells.size() - 1) {
           // 마지막 점: 사용자가 지정한 목표 각도
           pose.pose.orientation = goal_pose_.pose.orientation;
       } else {
-          // 중간 점: 다음 점을 바라보도록 각도 계산
+          // 중간 점: 다음 점을 향해 몸을 돌리도록 계산
           double yaw = 0.0;
           if (i + 1 < path_cells.size()) {
               auto next_pos = gridToWorld(path_cells[i+1].x, path_cells[i+1].y);
-              yaw = std::atan2(next_pos.second - world_pos.second, next_pos.first - world_pos.first);
-          } else {
-              // (예외 처리) 혹시 다음 점이 없으면 목표 각도 사용
-              yaw = getYaw(goal_pose_.pose.orientation);
+              auto curr_pos = gridToWorld(cell.x, cell.y);
+              yaw = std::atan2(next_pos.second - curr_pos.second, next_pos.first - curr_pos.first);
           }
-          pose.pose.orientation.z = std::sin(yaw / 2.0);
           pose.pose.orientation.w = std::cos(yaw / 2.0);
-      }*/
+          pose.pose.orientation.z = std::sin(yaw / 2.0);
+          pose.pose.orientation.x = 0.0;
+          pose.pose.orientation.y = 0.0;
+      }
+     /*
      if (i == path_cells.size() - 1) {
           // 마지막 점: 사용자가 Rviz에서 지정한 Goal Orientation 적용!
           pose.pose.orientation = goal_pose_.pose.orientation;
@@ -292,7 +293,7 @@ private:
           pose.pose.orientation.x = 0.0;
           pose.pose.orientation.y = 0.0;
           pose.pose.orientation.z = 0.0;
-      }
+      }*/
       
       path_msg.poses.push_back(pose);
     }
