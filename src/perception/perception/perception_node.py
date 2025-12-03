@@ -16,7 +16,7 @@ class PerceptionNode(Node):
 
         # 1. 모델 경로 설정 (setup.py에서 복사된 위치를 자동으로 찾음)
         package_share_directory = get_package_share_directory('perception')
-        model_path = os.path.join(package_share_directory, 'weights', 'best.pt')
+        model_path = os.path.join(package_share_directory, 'weights', 'best(1).pt')
 
         
 
