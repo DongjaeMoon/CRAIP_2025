@@ -32,18 +32,18 @@ from utils import (
     compute_scan_log_likelihood_endpoint_model,
     scan_to_pcd,
     icp_2d,
-    compute_scan_correlation,
 )
 
 
 class Particle:
-    __slots__ = ("x", "y", "yaw", "weight")
+    __slots__ = ("x", "y", "yaw", "weight", "log_weight")
 
-    def __init__(self, x=0.0, y=0.0, yaw=0.0, weight=1.0):
+    def __init__(self, x=0.0, y=0.0, yaw=0.0, weight=1.0, log_weight=0.0):
         self.x = x
         self.y = y
         self.yaw = yaw
         self.weight = weight
+        self.log_weight = log_weight
 
 
 class GlobalLocalizerNode(Node):
@@ -77,7 +77,7 @@ class GlobalLocalizerNode(Node):
         )
 
         self.scan_sub = self.create_subscription(
-            LaserScan, "/scan", self.scan_callback, 10
+            LaserScan, "/scan", self.scan_callback, 1
         )
 
         self.map_msg: OccupancyGrid | None = None
@@ -99,6 +99,7 @@ class GlobalLocalizerNode(Node):
         self.T_map_to_base_init = pose_to_matrix(
             [self.init_x, self.init_y, self.z, q_init[0], q_init[1], q_init[2], q_init[3]]
         )
+        self.T_map_to_base = None
 
         # --- Particle Filter state ---
         self.num_particles = 150
@@ -116,11 +117,6 @@ class GlobalLocalizerNode(Node):
 
         # Build likelihood field in background after short delay
         self.likelihood_build_timer = None
-
-        # NEW: Separate update rates
-        self.pf_update_rate = 2.0  # Run PF at 2 Hz
-        self.last_pf_update_time = None
-        self.pf_update_interval = 1.0 / self.pf_update_rate
 
         self.icp_counter = 0
         self.icp_every_n_updates = 5  # Run ICP every 5th PF update
@@ -148,16 +144,13 @@ class GlobalLocalizerNode(Node):
         self.get_logger().info(f"[PF] Map received: {msg.info.width}x{msg.info.height}, res={msg.info.resolution:.3f}m")
         self.map_msg = msg
 
-        # Schedule likelihood field building with a short delay (non-blocking)
-        if self.likelihood_build_timer is None and not self.likelihood_field_building:
-            self.likelihood_build_timer = self.create_timer(0.5, self.build_likelihood_field_delayed)
+        if not self.likelihood_field_building and self.likelihood_field is None:
+            self.build_likelihood_field()
 
-    def build_likelihood_field_delayed(self):
+    def build_likelihood_field(self):
         """
         Build likelihood field in a timer callback (called once after short delay)
         """
-        if self.likelihood_field_building:
-            return
         
         if self.map_msg is None:
             return
@@ -175,10 +168,6 @@ class GlobalLocalizerNode(Node):
             self.likelihood_field = None
         finally:
             self.likelihood_field_building = False
-            # Cancel the timer so it only runs once
-            if self.likelihood_build_timer is not None:
-                self.likelihood_build_timer.cancel()
-                self.likelihood_build_timer = None
 
     def scan_callback(self, scan: LaserScan):
         """
@@ -201,14 +190,6 @@ class GlobalLocalizerNode(Node):
         
         t_scan = Time.from_msg(scan.header.stamp)
         
-        # Check if enough time has passed for PF update
-        if self.last_pf_update_time is not None:
-            dt = (t_scan - self.last_pf_update_time).nanoseconds * 1e-9
-            if dt < self.pf_update_interval:
-                # Skip PF update, but still update pose estimate
-                self.update_pose_estimate_only(scan, t_scan)
-                return
-
         t_scan_msg = scan.header.stamp
         t_scan = Time.from_msg(t_scan_msg)
 
@@ -265,18 +246,15 @@ class GlobalLocalizerNode(Node):
         # best_p = max(self.particles, key=lambda p: p.weight)
         # T_map_to_base = self.matrix_from_pose_2d(best_p.x, best_p.y, best_p.yaw)
 
+        # or use smoothed pose
         pose = self.get_smoothed_pose()
         if pose is None:
             return
-        
         smooth_x, smooth_y, smooth_yaw = pose
         T_map_to_base = self.matrix_from_pose_2d(smooth_x, smooth_y, smooth_yaw)
 
         # 7) Update map->odom
         self.update_map_to_odom_from_pose_matrix(T_map_to_base, T_odom_to_base)
-
-        # 8) Publish /go1_pose
-        self.publish_go1_pose_from_matrix(T_map_to_base, t_scan_msg)
 
     def tf_timer_callback(self):
         """
@@ -304,14 +282,26 @@ class GlobalLocalizerNode(Node):
         
         self.tf_broadcaster.sendTransform(tf_msg)
 
+        now = self.get_clock().now()
+        try:
+            T_odom_from_base = transform_to_matrix(
+                self.tf_buffer.lookup_transform("odom", "base", now.to_msg()).transform
+            )
+        except (LookupException, ConnectivityException, ExtrapolationException) as e:
+            self.get_logger().warn(f"[PF] Could not get odom<-base: {e}", throttle_duration_sec=2.0)
+            return
+
+        T_map_to_base = self.T_map_to_odom @ T_odom_from_base
+        self.publish_go1_pose_from_matrix(T_map_to_base, now.to_msg())
+
     # =========================================================
     # Particle Filter helpers
     # =========================================================
 
     def initialize_particles_from_initial_pose(self):
-        sigma_x = 0.2
-        sigma_y = 0.2
-        sigma_yaw = math.radians(10.0)
+        sigma_x = 0.1
+        sigma_y = 0.1
+        sigma_yaw = math.radians(3.0)
 
         self.particles = []
         for _ in range(self.num_particles):
@@ -322,8 +312,8 @@ class GlobalLocalizerNode(Node):
 
     def pf_prediction(self, dx_odom: float, dy_odom: float, dyaw_odom: float):
         """Motion model"""
-        sigma_trans = 0.02
-        sigma_rot = math.radians(2.0)
+        sigma_trans = 0.15
+        sigma_rot = math.radians(3.0)
 
         for p in self.particles:
             noisy_dx = dx_odom + np.random.normal(0.0, sigma_trans)
@@ -351,24 +341,33 @@ class GlobalLocalizerNode(Node):
         if N == 0:
             return
 
+        log_weights = []
         for p in self.particles:
-            try:
-                # More accurate but slower
-                correlation = compute_scan_correlation(
-                    p.x, p.y, p.yaw, scan, self.likelihood_field, max_beams=50)
-                p.weight = max(1e-10, correlation)
-            except Exception as e:
-                p.weight = 1e-10
-        
-        # Convert to normalized linear weights
+            log_w = compute_scan_log_likelihood_endpoint_model(p.x, p.y, p.yaw, scan, self.likelihood_field)
+            log_weights.append(log_w)
+            
+        # Log-Sum-Exp Trick for numerical stability
+        max_log_w = max(log_weights)
+        weights = []
+        for lw in log_weights:
+            weights.append(math.exp(lw - max_log_w))
+            
         # Normalize
-        total = sum(p.weight for p in self.particles)
-        for p in self.particles:
-            p.weight /= total
-        
+        total_w = sum(weights)
+        if total_w > 1e-9:
+            for i, p in enumerate(self.particles):
+                p.weight = weights[i] / total_w
+        else:
+            # Recovery: If all particles have 0 probability, add random noise
+            self.get_logger().warn("Particle Filter Lost! Adding noise.")
+            for p in self.particles:
+                p.weight = 1.0 / self.num_particles
+                p.x += np.random.normal(0, 0.2)
+                p.y += np.random.normal(0, 0.2)
+
         self.icp_counter += 1
         if self.icp_counter >= self.icp_every_n_updates:
-            self.refine_top_particles_with_icp(scan, top_k=3)  # Reduce from 5 to 3
+            self.refine_top_particles_with_icp(scan, top_k=1)  # Reduce from 5 to 3
             self.icp_counter = 0
 
     def refine_top_particles_with_icp(self, scan: LaserScan, top_k: int = 5):
@@ -399,7 +398,7 @@ class GlobalLocalizerNode(Node):
             
             try:
                 # ICP alignment
-                T_icp = icp_2d(
+                T_icp, _, _ = icp_2d(
                     previous_pcd=map_pcd,
                     current_pcd=scan_world,
                     max_iterations=25,
@@ -407,26 +406,25 @@ class GlobalLocalizerNode(Node):
                     distance_threshold=0.25
                 )
                 
+                T_p = self.se2_from_pose(p.x, p.y, p.yaw)
+
+                # Refined pose: X_new = T_icp * X_p
+                T_new = T_icp @ T_p
                 # Update particle
-                dx = T_icp[0, 2]
-                dy = T_icp[1, 2]
-                dyaw = math.atan2(T_icp[1, 0], T_icp[0, 0])
+                x_new, y_new, yaw_new = T_new[:3, 3].flatten()
+                dx   = x_new - p.x
+                dy   = y_new - p.y
+                dyaw = self.normalize_angle(yaw_new - p.yaw)
                 
                 # Only apply if refinement is small (sanity check)
                 if math.sqrt(dx**2 + dy**2) < 0.5 and abs(dyaw) < math.radians(15):
                     p.x += dx
                     p.y += dy
                     p.yaw = self.normalize_angle(p.yaw + dyaw)
-                    p.weight *= 1.2  # Boost weight
                     refined += 1
                     
             except Exception:
                 pass
-        
-        # Re-normalize after weight boosting
-        total = sum(p.weight for p in self.particles)
-        for p in self.particles:
-            p.weight /= total
         
         if refined > 0:
             self.get_logger().debug(f"[ICP] Refined {refined}/{top_k} particles")
@@ -462,6 +460,18 @@ class GlobalLocalizerNode(Node):
     # =========================================================
     # Transform helpers
     # =========================================================
+
+    @staticmethod
+    def se2_from_pose(x: float, y: float, yaw: float) -> np.ndarray:
+        """Construct 3x3 SE(2) transform from 2D pose."""
+        c = math.cos(yaw)
+        s = math.sin(yaw)
+        T = np.eye(3)
+        T[0, 0] = c;  T[0, 1] = -s
+        T[1, 0] = s;  T[1, 1] =  c
+        T[0, 2] = x
+        T[1, 2] = y
+        return T
 
     @staticmethod
     def normalize_angle(a: float) -> float:

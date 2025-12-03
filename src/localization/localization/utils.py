@@ -71,7 +71,11 @@ def scan_to_pcd(msg: LaserScan):
     pcd = np.column_stack((ranges * np.cos(angles), ranges * np.sin(angles)))
     return pcd
 
-def icp_2d(previous_pcd, current_pcd, max_iterations, tolerance, distance_threshold):
+def icp_2d(previous_pcd,
+           current_pcd,
+           max_iterations=50,
+           tolerance=1e-6,
+           distance_threshold=None):
     """
     Iterative Closest Point (ICP) algorithm for aligning 2D point clouds.
 
@@ -81,62 +85,94 @@ def icp_2d(previous_pcd, current_pcd, max_iterations, tolerance, distance_thresh
         previous_pcd: (N, 2) numpy array - target/reference point cloud
         current_pcd: (M, 2) numpy array - source point cloud to be aligned
         max_iterations: Maximum number of iterations to run ICP
-        tolerance: Convergence tolerance for error change
+        tolerance: Convergence tolerance for change in mean squared error
         distance_threshold: Only consider point pairs within this distance (None for all)
         
     Returns:
-        T: (3, 3) SE(2) transformation matrix [R | t; 0 0 1] that transforms current_pcd to previous_pcd
+        T: (3, 3) SE(2) transformation matrix [R | t; 0 0 1]
+           that transforms current_pcd to previous_pcd
+        fitness: inlier ratio = (#inliers) / M, where M = current_pcd.shape[0]
+        inlier_count: number of inliers in the final correspondence set
     """
+    previous_pcd = np.asarray(previous_pcd, dtype=float)
+    current_pcd = np.asarray(current_pcd, dtype=float)
+
+    assert previous_pcd.ndim == 2 and previous_pcd.shape[1] == 2
+    assert current_pcd.ndim == 2 and current_pcd.shape[1] == 2
+
     # Step 1: Initialize transformation
-    R, t = _initialize_alignment(current_pcd, previous_pcd)
+    R, t = _initialize_alignment(current_pcd, previous_pcd)  # R: (2,2), t: (2,)
     E_prev = np.inf
-    errors = []
-    
-    for iteration in range(max_iterations):
+
+    for _ in range(max_iterations):
         # Step 2: Apply current transformation to source point cloud
         aligned_current_pcd = _apply_alignment(current_pcd, R, t)
-        
+
         # Step 3: Find correspondences (nearest neighbors)
         pairs, distances = _return_closest_pairs(aligned_current_pcd, previous_pcd)
-        
+        # pairs: (K, 2) -> indices into (aligned_current_pcd, previous_pcd)
+        # distances: (K,)
+
+        if len(pairs) < 3:
+            # Not enough correspondences to compute a reliable transform
+            break
+
         # Step 3.5: Reject outlier correspondences if threshold provided
         if distance_threshold is not None:
             valid_mask = distances <= distance_threshold
-            if np.sum(valid_mask) < 3:  # Need at least 3 points for alignment
+            if np.count_nonzero(valid_mask) < 3:
                 # Not enough valid correspondences
                 break
             pairs = pairs[valid_mask]
             distances = distances[valid_mask]
-        
+
         # Step 4: Compute incremental transformation to minimize error
-        R_new, t_new = _update_alignment(
-            aligned_current_pcd[pairs[:, 0]], 
-            previous_pcd[pairs[:, 1]]
-        )
-        
+        src_pts = aligned_current_pcd[pairs[:, 0]]   # after current transform
+        tgt_pts = previous_pcd[pairs[:, 1]]
+
+        R_inc, t_inc = _update_alignment(src_pts, tgt_pts)
+
         # Step 5: Compose transformations
-        # Total transformation: first apply (R, t), then apply (R_new, t_new)
-        # R_total = R_new @ R, t_total = R_new @ t + t_new
-        R = R_new @ R
-        t = R_new @ t + t_new
-        
-        # Step 6: Compute error (mean squared distance)
+        # New total transform: first apply (R, t), then (R_inc, t_inc)
+        R = R_inc @ R
+        t = R_inc @ t + t_inc
+
+        # Step 6: Compute error (mean squared distance) on current inliers
         E = np.mean(distances ** 2)
-        errors.append(E)
-        
+
         # Step 7: Check convergence
         if abs(E_prev - E) < tolerance:
             break
-        
+
         E_prev = E
-    
+
+    # ----- Final evaluation for fitness / inliers -----
+    # Use the final transformation to compute final correspondences and inliers
+    aligned_final = _apply_alignment(current_pcd, R, t)
+    final_pairs, final_distances = _return_closest_pairs(aligned_final, previous_pcd)
+
+    if len(final_pairs) == 0:
+        inlier_count = 0
+        fitness = 0.0
+    else:
+        if distance_threshold is not None:
+            final_mask = final_distances <= distance_threshold
+            inlier_count = int(np.count_nonzero(final_mask))
+        else:
+            inlier_count = int(len(final_pairs))
+
+        # Fitness: fraction of current_pcd points that have an inlier match
+        # With your lidar, current_pcd.shape[0] should be 720.
+        M = float(current_pcd.shape[0])
+        fitness = inlier_count / M if M > 0 else 0.0
+
     # Convert R (2x2) and t (2,) to SE(2) transformation matrix (3x3)
     T = np.eye(3)
     T[:2, :2] = R
     T[:2, 2] = t
-    
-    return T
-        
+
+    return T, fitness, inlier_count
+
 
 def _initialize_alignment(current_pcd, previous_pcd):
     """
@@ -177,35 +213,43 @@ def _apply_alignment(current_pcd, R, t):
     # Equivalent to: aligned = current_pcd @ R.T + t
     return (R @ current_pcd.T).T + t
 
-
 def _return_closest_pairs(current_pcd, previous_pcd):
     """
     Find closest point pairs between two point clouds.
-    
+
     For each point in current_pcd, find the closest point in previous_pcd.
-    
+
     Args:
         current_pcd: (N, 2) numpy array of 2D points
         previous_pcd: (M, 2) numpy array of 2D points
-    
+
     Returns:
         pairs: (N, 2) numpy array where pairs[i] = [current_idx, previous_idx]
         distances: (N,) numpy array of distances to closest points
     """
-    # Compute pairwise distances using broadcasting
-    # current_pcd[:, None, :] has shape (N, 1, 2)
-    # previous_pcd[None, :, :] has shape (1, M, 2)
-    # diff has shape (N, M, 2)
+    current_pcd = np.asarray(current_pcd, dtype=float)
+    previous_pcd = np.asarray(previous_pcd, dtype=float)
+
+    N = current_pcd.shape[0]
+
+    # Broadcasting: (N, 1, 2) - (1, M, 2) -> (N, M, 2)
     diff = current_pcd[:, None, :] - previous_pcd[None, :, :]
-    distances_matrix = np.linalg.norm(diff, axis=2)  # Shape: (N, M)
-    
-    # Find closest previous_pcd point for each current_pcd point
-    closest_previous_indices = np.argmin(distances_matrix, axis=1)  # Shape: (N,)
-    distances = distances_matrix[np.arange(len(current_pcd)), closest_previous_indices]  # Shape: (N,)
-    
-    # Create pairs: (current_pcd_idx, previous_pcd_idx)
-    pairs = np.column_stack((np.arange(len(current_pcd)), closest_previous_indices))
-    
+
+    # Squared distances: (N, M)
+    dist_sq = np.einsum('ijk,ijk->ij', diff, diff)
+
+    # Index of nearest neighbor in previous_pcd for each point in current_pcd
+    closest_previous_indices = np.argmin(dist_sq, axis=1)  # (N,)
+
+    # Squared distance to the nearest neighbor
+    min_dist_sq = dist_sq[np.arange(N), closest_previous_indices]  # (N,)
+
+    # True Euclidean distance only for the minima
+    distances = np.sqrt(min_dist_sq)
+
+    # Pairs: (current_idx, previous_idx)
+    pairs = np.column_stack((np.arange(N, dtype=int), closest_previous_indices.astype(int)))
+
     return pairs, distances
 
 
@@ -252,7 +296,7 @@ def _update_alignment(source_paired, target_paired):
 def build_likelihood_field_from_map(
     map_msg: OccupancyGrid,
     occ_threshold: int = 50,
-    treat_unknown_as_free: bool = True,
+    treat_unknown_as_free: bool = False,
 ) -> Dict[str, Any]:
     """
     Build likelihood-field (distance field) from an OccupancyGrid using optimized distance transform.
@@ -356,31 +400,12 @@ def compute_scan_log_likelihood_endpoint_model(
     particle_yaw: float,
     scan: LaserScan,
     likelihood_field: Dict[str, Any],
-    max_beams: int = 60,
-    sigma_hit: float = 0.2,
-    z_hit: float = 0.8,
-    z_rand: float = 0.2,
+    max_beams: int = 60
 ) -> float:
     """
-    Compute log-likelihood of scan measurement given particle pose using endpoint model.
-    
-    This is the MCL sensor model that compares laser endpoints to the likelihood field.
-
-    Args:
-        particle_x, particle_y, particle_yaw: Particle pose in map frame
-        scan: LaserScan message
-        likelihood_field: Pre-computed distance field from build_likelihood_field_from_map()
-        max_beams: Maximum number of beams to use (for speed), None for all
-        sigma_hit: Sensor noise standard deviation [m]
-        z_hit: Weight of "hit" component in mixture model
-        z_rand: Weight of random measurement component
-        
-    Returns:
-        log_likelihood: Log p(scan | particle_pose) for this particle
-        
-    Note: Assumes laser is at robot origin. If laser has offset, transform outside this function.
+    Robust Endpoint Model.
+    Returns: Log-Likelihood (Negative values are expected!)
     """
-
     dist_field = likelihood_field["distance"]
     origin_x = likelihood_field["origin_x"]
     origin_y = likelihood_field["origin_y"]
@@ -391,86 +416,81 @@ def compute_scan_log_likelihood_endpoint_model(
     ranges = np.array(scan.ranges, dtype=float)
     angle_min = scan.angle_min
     angle_inc = scan.angle_increment
-    r_min = scan.range_min
     r_max = scan.range_max
-
-    # Subsample beams if requested for computational efficiency
+    
     n_beams = len(ranges)
-    # if max_beams is not None and max_beams > 0 and max_beams < n_beams:
-    #     step = max(1, n_beams // max_beams)
-    #     indices = range(0, n_beams, step)
-    # else:
-    #     indices = range(n_beams)
-
-    if max_beams >= n_beams:
-        indices = range(n_beams)
+    
+    # Random downsampling to avoid aliasing (better than fixed stride)
+    if max_beams and max_beams < n_beams:
+        step = int(n_beams / max_beams)
+        indices = np.arange(0, n_beams, step)
     else:
-        bins = np.array_split(np.arange(n_beams), max_beams)
-        indices = [np.random.choice(bin) for bin in bins if len(bin) > 0]
+        indices = np.arange(n_beams)
 
-    log_w = 0.0
-    valid_count = 0
+    # Tuning Parameters
+    z_hit = 0.95
+    z_rand = 0.05
+    sigma_hit = 0.2  # Meters
+    max_dist = 2.0   # Truncate distance for likelihood
 
-    # Precompute trig values for particle pose (minor optimization)
-    cos_yaw = math.cos(particle_yaw)
-    sin_yaw = math.sin(particle_yaw)
+    log_likelihood_sum = 0.0
+    valid_rays = 0
+    
+    # Precompute trig
+    c_yaw = math.cos(particle_yaw)
+    s_yaw = math.sin(particle_yaw)
 
     for i in indices:
         r = ranges[i]
-        # Skip invalid measurements
-        if not np.isfinite(r):
+        if not np.isfinite(r) or r >= r_max:
             continue
-        if r < r_min or r > r_max:
-            continue
-
-        # Beam angle in robot frame
+            
+        # Beam endpoint in robot frame
         angle = angle_min + i * angle_inc
+        c_a = math.cos(angle)
+        s_a = math.sin(angle)
+        
+        lx = r * c_a
+        ly = r * s_a
+        
+        # Transform to map frame
+        wx = particle_x + (c_yaw * lx - s_yaw * ly)
+        wy = particle_y + (s_yaw * lx + c_yaw * ly)
+        
+        cell = world_to_map(wx, wy, origin_x, origin_y, resolution, width, height)
+        
+        dist = max_dist # Default penalty
+        if cell:
+            mx, my = cell
+            dist = float(dist_field[my, mx])
+        
+        # Clamp distance
+        if dist > max_dist:
+            dist = max_dist
 
-        # Endpoint in robot (laser) frame
-        cos_angle = math.cos(angle)
-        sin_angle = math.sin(angle)
-        x_l = r * cos_angle
-        y_l = r * sin_angle
+        # Gaussian Probability
+        # p_hit = (1 / (sigma * sqrt(2pi))) * exp(...)
+        # We ignore the constant factor as it cancels out in normalization usually, 
+        # but for log-likelihood mixing we need to be careful.
+        # Simplified Gaussian Score:
+        prob_hit = math.exp(-0.5 * (dist * dist) / (sigma_hit * sigma_hit))
+        
+        # Mixture model
+        # p = z_hit * p_hit + z_rand * (1/max_range)
+        # Assuming uniform random noise floor
+        prob = z_hit * prob_hit + z_rand * 0.05 
+        
+        # Log-Likelihood
+        log_likelihood_sum += math.log(prob)
+        valid_rays += 1
 
-        # Transform endpoint to world (map) frame using particle pose
-        x_world = particle_x + cos_yaw * x_l - sin_yaw * y_l
-        y_world = particle_y + sin_yaw * x_l + cos_yaw * y_l
+    if valid_rays == 0:
+        return -100.0 # Heavy penalty
 
-        # Convert world coordinates to map indices
-        cell = world_to_map(x_world, y_world, origin_x, origin_y, resolution, width, height)
-        if cell is None:
-            # Beam endpoint outside known map → treat as random measurement
-            p = 0.01
-            log_w += math.log(p)
-            valid_count += 1
-            continue
+    return log_likelihood_sum
 
-        mx, my = cell
-        # Get distance to nearest obstacle (indexing: row=my=y, col=mx=x)
-        dist = float(dist_field[my, mx])
 
-        # Likelihood field endpoint model
-        # p_hit ~ exp(-0.5 * (dist^2 / sigma_hit^2))
-        if sigma_hit <= 0.0:
-            sigma_hit = 0.2
-        p_hit = math.exp(-0.5 * (dist * dist) / (sigma_hit * sigma_hit))
-
-        # Mix with random measurement model
-        # p(z | x) = z_hit * p_hit + z_rand * p_rand
-        # where p_rand = 1 / z_max (uniform over valid range)
-        p = z_hit * p_hit + z_rand * (1.0 / max(r_max, 1e-3))
-        p = max(p, 1e-9)  # Avoid log(0)
-
-        log_w += math.log(p)
-        valid_count += 1
-
-    if valid_count == 0:
-        # No valid beams → extremely low likelihood
-        return -1e9
-
-    return log_w
-
-def compute_scan_correlation(
+def compute_scan_log_likelihood(
     particle_x: float,
     particle_y: float,
     particle_yaw: float,
@@ -479,9 +499,10 @@ def compute_scan_correlation(
     max_beams: int = 60
 ) -> float:
     """
-    Scan correlation using ray endpoints AND directions.
-    More rotation-sensitive than pure endpoint model.
+    Scan likelihood for particle filter.
+    Returns log-likelihood (sum over beams), not a normalized probability.
     """
+
     dist_field = likelihood_field["distance"]
     origin_x = likelihood_field["origin_x"]
     origin_y = likelihood_field["origin_y"]
@@ -502,9 +523,15 @@ def compute_scan_correlation(
     else:
         indices = range(n_beams)
 
-    correlation = 0.0
+    # Model parameters (tune)
+    sigma = 0.20         # [m] endpoint tolerance
+    occ_thresh = 0.10    # [m] consider "inside" obstacle
+    lambda_occ = 0.5     # penalty per ray violation
+    max_dist = 1.0       # [m] clamp large distances
+
+    log_like = 0.0
     valid_count = 0
-    
+
     cos_yaw = math.cos(particle_yaw)
     sin_yaw = math.sin(particle_yaw)
 
@@ -516,54 +543,74 @@ def compute_scan_correlation(
         angle = angle_min + i * angle_inc
         cos_angle = math.cos(angle)
         sin_angle = math.sin(angle)
-        
-        # Endpoint
+
+        # Endpoint in world
         x_l = r * cos_angle
         y_l = r * sin_angle
+
         x_world = particle_x + cos_yaw * x_l - sin_yaw * y_l
         y_world = particle_y + sin_yaw * x_l + cos_yaw * y_l
 
-        cell = world_to_map(x_world, y_world, origin_x, origin_y, 
-                           resolution, width, height)
+        cell = world_to_map(
+            x_world, y_world, origin_x, origin_y,
+            resolution, width, height
+        )
         if cell is None:
             continue
 
         mx, my = cell
         endpoint_dist = float(dist_field[my, mx])
-        
-        # ✅ NEW: Sample along the ray (rotation-sensitive!)
-        # Check multiple points along the ray, not just endpoint
-        ray_score = 0.0
-        num_samples = 5
-        
+
+        # Clamp distance to avoid huge penalties in unknown/empty regions
+        d = min(endpoint_dist, max_dist)
+
+        # --- Ray violation penalty (rotation-sensitive) ---
+        # sample along ray at fixed step in meters
+        step = 0.20  # [m]
+        num_samples = int(r / step)
+        if num_samples < 1:
+            num_samples = 1
+
+        n_viol = 0
         for s in range(1, num_samples + 1):
-            sample_r = r * (s / num_samples)
+            sample_r = s * step
+            if sample_r > r:
+                break
+
             sx_l = sample_r * cos_angle
             sy_l = sample_r * sin_angle
+
             sx_world = particle_x + cos_yaw * sx_l - sin_yaw * sy_l
             sy_world = particle_y + sin_yaw * sx_l + cos_yaw * sy_l
-            
-            sample_cell = world_to_map(sx_world, sy_world, origin_x, 
-                                      origin_y, resolution, width, height)
+
+            sample_cell = world_to_map(
+                sx_world, sy_world, origin_x, origin_y,
+                resolution, width, height
+            )
             if sample_cell is None:
                 continue
-            
+
             smx, smy = sample_cell
             sample_dist = float(dist_field[smy, smx])
-            
-            # Penalize if ray passes through occupied space
-            if sample_dist < 0.1:  # Close to obstacle
-                ray_score -= 1.0
-        
-        # Combine endpoint distance and ray traversal
-        if endpoint_dist < 0.2:  # Endpoint near obstacle (good)
-            correlation += 1.0 + ray_score * 0.1
-        else:
-            correlation += math.exp(-endpoint_dist) + ray_score * 0.1
-        
+
+            if sample_dist < occ_thresh:
+                n_viol += 1
+
+        # --- Per-beam log-likelihood ---
+        # Gaussian on endpoint distance + penalty per violation
+        # log p ~ -0.5 * (d^2 / sigma^2) - lambda_occ * n_viol
+        log_w_beam = -0.5 * (d * d) / (sigma * sigma) - lambda_occ * n_viol
+
+        log_like += log_w_beam
         valid_count += 1
 
     if valid_count == 0:
+        # Very unlikely pose if no beams are usable
         return -1e9
-    
-    return correlation / valid_count
+
+    # Either return total log-likelihood
+    # (recommended for PF, since max_beams is fixed)
+    return log_like
+
+    # If you want per-beam average (optional alternative):
+    # return log_like / valid_count
