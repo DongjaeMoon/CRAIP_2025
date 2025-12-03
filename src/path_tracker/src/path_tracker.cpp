@@ -249,9 +249,14 @@ void PathTracker::MainLoop() {
         double dx = _path.back().x - _state.x;
         double dy = _path.back().y - _state.y;
         double dist_to_goal = std::sqrt(dx*dx + dy*dy);
+        //수정 1203. 8시40분
+        if (!_is_goal_reached_mode && dist_to_goal <= 0.2) {
+            _is_goal_reached_mode = true;
+            std::cout << prColor::Green << "Goal Reached! Switching to Align Mode." << prColor::End << std::endl;
+        }
 
-        // B. 20cm 이내 진입 시: MPPI 알고리즘을 건너뛰고 "제자리 회전 모드"로 진입
-        if (dist_to_goal <= 0.30) {
+        // B. 30cm 이내 진입 시: MPPI 알고리즘을 건너뛰고 "제자리 회전 모드"로 진입
+        if (_is_goal_reached_mode) {
             
             // 1. 목표 각도와의 오차 계산
             double target_yaw = _path.back().yaw;
@@ -276,22 +281,33 @@ void PathTracker::MainLoop() {
                 
                 // 회전 명령 발행
                 _twist_pub->publish(rotate_cmd);
+                // 디버깅용 로그 (너무 많이 뜨면 주석 처리하세요)
+                // std::cout << "Aligning... Diff: " << yaw_diff << std::endl;
                 
                 // [중요] MPPI 로직이 실행되지 않도록 여기서 함수 종료!
-                return; 
-            } 
-            // 3. 거리도 맞고(20cm 이내), 각도도 맞았다면(3도 이내)? -> 진짜 도착!
-            else {
-                std::cout << "SUCCESS: Goal Reached & Aligned!" << std::endl;
-                PubZeroAction(); // 정지 명령(0,0) 전송
-                _path.clear();   // 경로 삭제 (이제 로봇은 멈춤 상태가 됨)
-                return;
+                
             }
-        }
+            else {
+                PubZeroAction(); // 완전 정지
+                std::cout << "Aligned Finished." << std::endl;
+                //std::cout << "dx:" << std::endl;
+                //std::cout << "dy:" << std::endl;
+                //std::cout << "dyaw:" << std::endl;
+                _path.clear();   // 경로 삭제 (이제 로봇은 멈춤 상태가 됨)
+            } 
+            return; 
+            // 3. 거리도 맞고(20cm 이내), 각도도 맞았다면(3도 이내)? -> 진짜 도착!
+            //else {
+            //    std::cout << "SUCCESS: Goal Reached & Aligned!" << std::endl;
+            //    PubZeroAction(); // 정지 명령(0,0) 전송
+            
+                //return;
+            }
+        
         // ==================================================================================
 
         if (_path.size() < 2) {
-            //throw CustomException::ErrorType::NotImplementedPath;
+            throw CustomException::ErrorType::NotImplementedPath;
             return;
         }
         
@@ -301,40 +317,7 @@ void PathTracker::MainLoop() {
 
         const auto is_goal = _IsGoal();
         if (is_goal) {
-            /*
-            _path.clear();
-            double target_yaw = _path.back().yaw;
-            double current_yaw = _state.yaw;
-            double yaw_diff = target_yaw - current_yaw;
-
-            // 각도 정규화 (-PI ~ PI)
-            while (yaw_diff > M_PI) yaw_diff -= 2.0 * M_PI;
-            while (yaw_diff < -M_PI) yaw_diff += 2.0 * M_PI;
-
-            // B. 각도가 틀어져 있다면? -> 제자리 회전 명령
-            if (std::abs(yaw_diff) > 0.05) { // 0.05 rad (약 3도) 이상 차이나면 회전
-                geometry_msgs::msg::Twist rotate_cmd;
-                rotate_cmd.linear.x = 0.0; // 직진 금지
-                
-                // P-제어 (너무 빠르지 않게 0.6으로 제한)
-                double ang_vel = yaw_diff * 1.5;
-                rotate_cmd.angular.z = std::max(std::min(ang_vel, 0.6), -0.6);
-                
-                _twist_pub->publish(rotate_cmd);
-                
-                // 로그 출력 (도배 방지용으로 필요하면 주석 처리)
-                // std::cout << "Auto Aligning... Diff: " << yaw_diff << std::endl;
-                
-                return; // [중요] MPPI 계산 못하게 여기서 함수 종료!
-            } 
-            // C. 각도도 맞았다면? -> 진짜 도착! 정지!
-            else {
-                std::cout << "Creating Robot AI: Goal Reached & Aligned!" << std::endl;
-                PubZeroAction(); // 0,0 명령 전송
-                _path.clear();   // 경로 삭제 (이제 NotImplementedPath 상태로 대기)
-                return;
-            }*/
-            //throw CustomException::ErrorType::GoalArrived;
+            throw CustomException::ErrorType::GoalArrived;
             _path.clear();
             return;
         }
@@ -342,7 +325,7 @@ void PathTracker::MainLoop() {
         const auto cte = GetCTE();
         PubTrackingInfo(cte);
         if (cte > _tracking_thres) {
-            //throw CustomException::ErrorType::NotFoundTargetPath;
+            throw CustomException::ErrorType::NotFoundTargetPath;
             return;
         }
 
@@ -1073,6 +1056,7 @@ void PathTracker::ResetPathTracker() {
     _target_ind = 0;
     _prev_ind = 0;
     _is_forward = true;
+    _is_goal_reached_mode = false;
 
     _cost.Reset();
 

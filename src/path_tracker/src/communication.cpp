@@ -1,6 +1,10 @@
 #include "path_tracker.hpp"
 
 void PathTracker::_LocalPathCallback(const nav_msgs::msg::Path::SharedPtr msg) {
+    // [추가] 경로가 계속 들어온다는 건 아직(또는 다시) 주행해야 한다는 뜻!
+    // 주행 중에는 false -> false (변화 없음)
+    // 도착해서 멈춰있다가 새 경로 받으면 true -> false (다시 출발!)
+    _is_goal_reached_mode = false;
     _path.clear();
     for (const auto& pose : msg->poses) {
         PathStamp stamp;

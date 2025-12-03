@@ -93,6 +93,7 @@ class PathTracker : public rclcpp::Node {
         bool _vis_subgoal;
         bool _debug_cost;
         bool _enable_stamped_cmd_vel;
+        bool _is_goal_reached_mode;
         int _num_vis;
 
         int _average;

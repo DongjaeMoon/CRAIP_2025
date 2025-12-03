@@ -9,7 +9,7 @@ namespace astar_planner
 
 // Parameters
 
-const double SAFETY_MARGIN = 3;        // 장애물로부터 5칸 띄우기 (약 0.5m)
+const double SAFETY_MARGIN = 4;        // 장애물로부터 5칸 띄우기 (약 0.5m)
 const int SMOOTHING_ITERATIONS = 5; // 경로를 5번 문질러서 부드럽게 만들기
 const double SMOOTH_WEIGHT = 0.5;   // 스무딩 강도 (0.0 ~ 1.0)
 const int samples_per_segment_ = 3; //
@@ -20,10 +20,10 @@ const int HARD_MARGIN = 3;
 
 // [SOFT] 로봇이 피하고 싶은 거리 (여유 공간, 약 0.4m -> 6~7칸)
 // 이 영역은 갈 수는 있지만, 페널티를 받습니다. -> 코너를 넓게 돌게 만듦
-const int SOFT_MARGIN = 7; 
+const int SOFT_MARGIN = 10; 
 
 // 벽 근처를 지나갈 때 부과할 벌점 (이 값이 클수록 벽에서 더 멀리 떨어지려 함)
-const double PROXIMITY_PENALTY = 20.0;
+const double PROXIMITY_PENALTY = 30.0;
 
 AStar::AStar()
 : map_width_(0), map_height_(0)

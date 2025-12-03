@@ -38,7 +38,7 @@ public:
       std::bind(&PathPlannerNode::mapCallback, this, std::placeholders::_1));
     
     current_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/go1_pose", 1,
+      "/go1_pose", 10,
       std::bind(&PathPlannerNode::currentPoseCallback, this, std::placeholders::_1));
     
     goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -98,7 +98,7 @@ private:
   
   void currentPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
   {
-    RCLCPP_INFO(this->get_logger(), "Pose callback called!!");
+    //RCLCPP_INFO(this->get_logger(), "Pose callback called!!");
     if (!has_current_pose_) {
       has_current_pose_ = true;
       current_pose_ = *msg;
@@ -150,7 +150,7 @@ private:
       return;  // Don't replan if goal is reached
       */
       ///*
-      if (goal_distance < 0.55) {  // Goal reached threshold
+      if (goal_distance < 0.15) {  // Goal reached threshold
         if (!goal_reached_) { // [수정] 목표 도달 시 상세 정보 출력
           // 각도(Yaw) 계산
           double target_yaw = getYaw(goal_pose_.pose.orientation);
