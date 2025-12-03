@@ -24,6 +24,7 @@ numpy<2.0
 ```bash
 cd ~/ai_robot_9
 ros2 run perception perception_node
+ros2 launch module_test interface_viewer.launch.py
 하면 됩니다.
 
 ## 3. 사용한 툴
