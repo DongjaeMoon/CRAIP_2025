@@ -1,0 +1,4 @@
+ultralytics
+opencv-python
+roboflow
+numpy<2.0
