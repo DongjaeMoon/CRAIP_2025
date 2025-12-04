@@ -26,13 +26,13 @@ path_tracker:
     Cov: [0.03, 0.05]
     
     # State cost matrix weights [x, y, velocity, yaw]
-    Q: [30.0, 30.0, 10.0, 5.0]
+    Q: [20.0, 20.0, 30.0, 10.0]
     
     # Terminal state cost matrix weights [x, y, velocity, yaw]
-    Qf: [30.0, 30.0, 10.0, 5.0]
+    Qf: [5.0, 5.0, 20.0, 5.0]
     
     # Control input cost matrix weights [linear_vel, angular_vel]
-    R: [5.0, 3.0]
+    R: [1.0, 3.0]
 
     subgoal_cost_weight: 0.0
     velocity_cost_weight: 0.0

@@ -250,7 +250,7 @@ void PathTracker::MainLoop() {
         double dy = _path.back().y - _state.y;
         double dist_to_goal = std::sqrt(dx*dx + dy*dy);
         //수정 1203. 8시40분
-        if (!_is_goal_reached_mode && dist_to_goal <= 0.2) {
+        if (!_is_goal_reached_mode && dist_to_goal <= 0.3) {
             _is_goal_reached_mode = true;
             std::cout << prColor::Green << "Goal Reached! Switching to Align Mode." << prColor::End << std::endl;
         }
@@ -290,9 +290,7 @@ void PathTracker::MainLoop() {
             else {
                 PubZeroAction(); // 완전 정지
                 std::cout << "Aligned Finished." << std::endl;
-                //std::cout << "dx:" << std::endl;
-                //std::cout << "dy:" << std::endl;
-                //std::cout << "dyaw:" << std::endl;
+                std::cout << "dx:" << dx << " dy:" << dy << " dyaw:" << yaw_diff <<std::endl;
                 _path.clear();   // 경로 삭제 (이제 로봇은 멈춤 상태가 됨)
             } 
             return; 
