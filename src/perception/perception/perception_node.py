@@ -48,7 +48,7 @@ class PerceptionNode(Node):
         self.get_logger().info("Perception Node Started! Waiting for images...")
 
     def listener_callback(self, rgb_msg, depth_msg):
-        self.get_logger().info("📷 이미지 수신 성공! (Callback Working)")
+        self.get_logger().info("이미지 수신 성공! (Callback Working)")
         # 1. 이미지 변환
         try:
             frame = self.br.imgmsg_to_cv2(rgb_msg, "bgr8")
