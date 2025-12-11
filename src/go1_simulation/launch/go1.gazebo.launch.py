@@ -2,7 +2,7 @@
 
 import os
 from launch import LaunchDescription
-from launch.actions import (AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable)
+from launch.actions import (AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable, TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -100,7 +100,8 @@ def generate_launch_description():
 
     declare_z_cmd = DeclareLaunchArgument(
         name='z',
-        default_value='0.5',
+        #default_value='0.5',
+        default_value='1.0',
         description='z component of initial position, meters')
 
     declare_roll_cmd = DeclareLaunchArgument(
@@ -251,7 +252,13 @@ def generate_launch_description():
     ld.add_action(start_gazebo_ros_bridge_cmd)
     ld.add_action(robot_state_publisher_cmd)
     ld.add_action(load_controllers_cmd)
-    ld.add_action(start_gazebo_ros_spawner_cmd)
+    #ld.add_action(start_gazebo_ros_spawner_cmd)
+    # 5초(period=5.0) 뒤에 로봇 스폰 명령(actions=[...])을 실행합니다.
+    delayed_spawn_robot = TimerAction(
+        period=10.0, 
+        actions=[start_gazebo_ros_spawner_cmd]
+    )
+    ld.add_action(delayed_spawn_robot)
     ld.add_action(go1_pointcloud_publisher_cmd)
     ld.add_action(go1_gt_pose_publisher_cmd)
 

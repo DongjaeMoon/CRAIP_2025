@@ -101,7 +101,7 @@ class OdomLocalizerNode(Node):
             1e-4                # bax
         ])
         self.R_icp_base = np.diag([
-            0.05**2, 0.05**2, math.radians(2.0)**2
+            0.03**2, 0.03**2, math.radians(1.2)**2
         ])  # base ICP measurement covariance
 
         # --- timer: periodically publish odom->base TF & /odom_local ---
@@ -337,7 +337,7 @@ class OdomLocalizerNode(Node):
         if R is None:
             # Too poor quality, skip update
             return
-
+        # self.get_logger().info(f"Q: {self.Q_imu_base}, R: {R}")
         # Measurement vector (3x1)
         z = np.array([[x_meas],
                     [y_meas],
@@ -401,7 +401,7 @@ class OdomLocalizerNode(Node):
         if inliers < MIN_INLIERS:
             return None
 
-        scale = 30 / fitness # need tuning
+        scale = 20 / fitness # need tuning
         return R_base * scale
 
     # =========================================================

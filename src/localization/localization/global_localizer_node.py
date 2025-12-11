@@ -313,7 +313,7 @@ class GlobalLocalizerNode(Node):
     def pf_prediction(self, dx_odom: float, dy_odom: float, dyaw_odom: float):
         """Motion model"""
         sigma_trans = 0.15
-        sigma_rot = math.radians(3.0)
+        sigma_rot = math.radians(1.5)
 
         for p in self.particles:
             noisy_dx = dx_odom + np.random.normal(0.0, sigma_trans)
@@ -433,6 +433,19 @@ class GlobalLocalizerNode(Node):
         """Low-variance resampling"""
         N = len(self.particles)
         if N == 0:
+            return
+        
+        sum_sq_weights = sum([p.weight ** 2 for p in self.particles])
+        
+        # N_eff 계산
+        if sum_sq_weights < 1e-9:
+            n_eff = 0
+        else:
+            n_eff = 1.0 / sum_sq_weights
+            
+        # 임계값: 보통 파티클 수의 1/2 또는 2/3
+        # N_eff가 낮다는 건 소수의 파티클이 가중치를 독점한다는 뜻 -> 이때만 리샘플링
+        if n_eff >= (self.num_particles / 1.5):
             return
 
         weights = np.array([p.weight for p in self.particles], dtype=float)
