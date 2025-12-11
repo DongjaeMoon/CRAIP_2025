@@ -96,12 +96,12 @@ class OdomLocalizerNode(Node):
 
         # --- noise parameters (TODO: tuning needed) ---
         self.Q_imu_base = np.diag([
-            0.01, 0.01, math.radians(1.0) ** 2,  # x, y, yaw
-            0.1,         # v, yaw_rate
+            0.0001, 0.0001, math.radians(0.5) ** 2,  # x, y, yaw
+            0.001,         # v, yaw_rate
             1e-4                # bax
         ])
         self.R_icp_base = np.diag([
-            0.03**2, 0.03**2, math.radians(1.2)**2
+            0.01**2, 0.01**2, math.radians(0.5)**2
         ])  # base ICP measurement covariance
 
         # --- timer: periodically publish odom->base TF & /odom_local ---
@@ -126,6 +126,8 @@ class OdomLocalizerNode(Node):
         self.has_base_to_laser = False
         self.T_base_to_laser = np.eye(4)
         self.T_laser_to_base = np.eye(4)
+
+        self.current_wz = 0.0
 
     # =========================================================
     # Callbacks
@@ -158,6 +160,8 @@ class OdomLocalizerNode(Node):
         # IMU measurements
         ax_meas = msg.linear_acceleration.x
         wz_meas = msg.angular_velocity.z
+
+        self.current_wz = msg.angular_velocity.z
 
         # bias correction
         ax = ax_meas - bax
@@ -225,7 +229,6 @@ class OdomLocalizerNode(Node):
             - Accumulate this relative motion into a LiDAR odometry pose in odom frame.
             - Use this pose as a measurement z = [x_icp, y_icp, yaw_icp] for EKF.
         """
-    def scan_callback(self, scan: LaserScan):
         if not self.initialized:
             return
         if self.current_time is None:
@@ -257,12 +260,15 @@ class OdomLocalizerNode(Node):
         # 3) Run scan-to-scan ICP
         # FIX APPLIED: Swapped arguments (Target=prev, Source=curr)
         try:
+            dt_scan = (t_scan - self.prev_scan_time).nanoseconds * 1e-9
+            prediction_yaw = self.current_wz * dt_scan
             T_prev_to_curr_laser, fitness, inliers = icp_2d(
                 previous_pcd=self.prev_scan_pcd,   # Target (Previous)
                 current_pcd=current_pcd_laser,     # Source (Current)
                 max_iterations=self.icp_max_iterations,
                 tolerance=self.icp_tolerance,
                 distance_threshold=self.icp_distance_threshold,
+                init_yaw=prediction_yaw
             )
         except Exception as e:
             self.get_logger().warn(f"[ICP] icp_2d failed: {e}")
@@ -315,6 +321,10 @@ class OdomLocalizerNode(Node):
             self.lidar_pose_yaw,
             fitness, inliers
         )
+
+        self.lidar_pose_x = self.x[0, 0]
+        self.lidar_pose_y = self.x[1, 0]
+        self.lidar_pose_yaw = self.x[2, 0]
         
 
     # =========================================================
@@ -401,7 +411,7 @@ class OdomLocalizerNode(Node):
         if inliers < MIN_INLIERS:
             return None
 
-        scale = 20 / fitness # need tuning
+        scale = scale = 1.0 / (fitness**2 + 1e-6) # need tuning
         return R_base * scale
 
     # =========================================================
