@@ -10,6 +10,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "visualization_msgs/msg/marker.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 #include "astar_planner/astar.hpp"
 
@@ -44,6 +45,11 @@ public:
     goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       "/goal_pose", 10,
       std::bind(&PathPlannerNode::goalCallback, this, std::placeholders::_1));
+
+    // [추가] Path Tracker가 보내는 도착 신호 구독
+    goal_reached_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+      "/goal_reached", 10,
+      std::bind(&PathPlannerNode::goalReachedCallback, this, std::placeholders::_1));
     
     // Publishers
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/local_path", 10);
@@ -62,6 +68,30 @@ private:
     double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
     double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
     return std::atan2(siny_cosp, cosy_cosp);
+  }
+
+  // [추가] 도착 신호 콜백 함수
+  void goalReachedCallback(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    // Path Tracker가 정렬까지 끝내고 True를 보내면
+    if (msg->data == true) {
+        RCLCPP_INFO(this->get_logger(), ">>> Path Tracker finished alignment. Resetting goal.");
+        
+        // 1. 목표 상태 해제 (이제 로봇을 움직여도 replanPath가 호출되지 않음)
+        has_goal_ = false;
+        goal_reached_ = false;
+
+        // 2. 빈 경로 발행 (Rviz나 다른 노드에 경로가 사라졌음을 알림)
+        nav_msgs::msg::Path empty_path;
+        empty_path.header.stamp = this->now();
+        empty_path.header.frame_id = "map";
+        path_pub_->publish(empty_path);
+
+        // 3. (선택사항) Goal Marker도 삭제하고 싶다면 여기서 처리 가능
+        // visualization_msgs::msg::Marker delete_marker;
+        // delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+        // goal_marker_pub_->publish(delete_marker);
+    }
   }
 
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
@@ -402,6 +432,8 @@ private:
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr current_pose_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+  // [추가] goal reached subscriber
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr goal_reached_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr viz_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr goal_marker_pub_;

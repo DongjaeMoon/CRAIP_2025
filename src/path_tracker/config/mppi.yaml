@@ -19,25 +19,25 @@ path_tracker:
     DT: 0.1                      # Time step (seconds)
     DL: 0.1                      # Distance step for path discretization
     
-    Lam: 12.5                    # Temperature parameter for MPPI (lower = more exploitation)
+    Lam: 10.0                    # Temperature parameter for MPPI (lower = more exploitation)
     Gam: 0.9                     # Discount factor for cost-to-go
     
     # Covariance for sampling control inputs [linear_vel, angular_vel]
     Cov: [0.05, 0.10]
     
     # State cost matrix weights [x, y, velocity, yaw]
-    Q: [10.0, 10.0, 30.0, 10.0]
+    Q: [25.0, 25.0, 30.0, 10.0]
     
     # Terminal state cost matrix weights [x, y, velocity, yaw]
-    Qf: [10.0, 10.0, 20.0, 5.0]
+    Qf: [20.0, 20.0, 20.0, 5.0]
     
     # Control input cost matrix weights [linear_vel, angular_vel]
-    R: [1.0, 3.0]
+    R: [1.0, 5.0]
 
     subgoal_cost_weight: 0.0
     velocity_cost_weight: 0.0
     heading_cost_weight: 0.0
-    map_cost_weight: 0.0
+    map_cost_weight: 5.0
     use_const: false    
     const_thres: 0.5
     tracking_thres: 5.0
@@ -47,7 +47,7 @@ path_tracker:
     # Path Tracking Parameters
     # ===========================================================================
     
-    target_speed: 0.2            # Target forward speed (m/s)
+    target_speed: 0.5            # Target forward speed (m/s)
     n_ind_search: 30             # Number of indices to search for nearest path point
     tracking_thres: 5.0          # Maximum tracking error threshold (m)
     goal_thres: 0.30              # Goal reached threshold (m)
@@ -72,8 +72,8 @@ path_tracker:
     wheelRadius: 0.1785          # Effective wheel radius (m)
     wheelBase: 0.512             # Distance between front and rear (m)
     
-    maxLinVel: 0.4               # Maximum linear velocity (m/s) 
-    maxAngVel: 0.3              # Maximum angular velocity (rad/s)
+    maxLinVel: 0.7               # Maximum linear velocity (m/s) 
+    maxAngVel: 0.75              # Maximum angular velocity (rad/s)
     #DJ's comment_11.22 : maxAngVel, maxLinVel modified needed, always care about this.
 
     # ===========================================================================

@@ -5,6 +5,12 @@ prompt: |
   You will take natural language user command. 
   Your task is to select the appropriate action among the candidates.
 
+  # Actions Description:
+  # - mission1.launch.py: Go to the toilet (restroom) or find the toilet.
+  # - stop.py: Stop the robot immediately.
+  # - go_front.py: Move forward.
+  # - go_back.launch.py: Move backward.
+
   Here is the list of candidates:
   ACTION_CANDIDATES
 
@@ -22,3 +28,4 @@ action_candidates:
     - go_front.py
   launch:
     - go_back.launch.py
+    - mission1.launch.py
