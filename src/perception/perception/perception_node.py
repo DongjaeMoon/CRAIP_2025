@@ -71,9 +71,15 @@ class PerceptionNode(Node):
             boxes = result.boxes
             for box in boxes:
                 # 좌표 및 정보 추출
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
+                coords = box.xyxy[0].cpu().numpy()
+                
+                # 2. 정수형(int)으로 명확하게 변환
+                x1, y1, x2, y2 = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
+                pt1 = (x1, y1)
+                pt2 = (x2, y2)
+                # 3. 로그로 좌표 확인 (터미널에 좌표가 찍히는지 보세요!)
+                self.get_logger().info(f"Drawing Box at: {pt1} ~ {pt2}")                
+                cls=int(box.cls[0])           
                 label_name = self.model.names[cls] # 예: fresh_apple, rotten_banana
 
                 # 중심점 계산
@@ -85,12 +91,18 @@ class PerceptionNode(Node):
                 cx_safe = np.clip(cx, 0, img_w - 1)
                 cy_safe = np.clip(cy, 0, img_h - 1)
                 
-                real_dist = depth_frame[cy_safe, cx_safe]
+                # ★★★ [수정된 부분 시작] ★★★
+                # Depth 값 읽기
+                raw_dist = depth_frame[cy_safe, cx_safe]
 
-                # 거리값이 유효하지 않으면(inf, nan) 무시
-                if np.isnan(real_dist) or np.isinf(real_dist):
-                    continue
-
+                # 거리값이 이상하면(NaN, Inf) 무시하지 말고 0.0으로 처리!
+                if np.isnan(raw_dist) or np.isinf(raw_dist):
+                    real_dist = 0.0
+                    dist_str = "??"
+                else:
+                    real_dist = float(raw_dist)
+                    dist_str = f"{real_dist:.2f}m"
+                # ★★★ [수정된 부분 끝] ★★★
                 # 4. 판단 로직 (Rule)
                 # A. 거리 조건: 3m 이내
                 is_close = real_dist <= 3.0
@@ -104,21 +116,31 @@ class PerceptionNode(Node):
                 is_edible = "good" in label_name
 
                 # 시각화 (박스 그리기)
-                color = (0, 255, 0) if is_edible else (0, 0, 255) # 식용은 초록, 아니면 빨강
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{label_name} {real_dist:.2f}m", (x1, y1-10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                if is_edible:
+                    box_color = (0, 255, 0)  # 초록색 (Green)
+                else:
+                    box_color = (0, 0, 255)  # 빨간색 (Red)
+
+                # 표시할 텍스트 설정 (라벨 이름 + 거리)
+                label_text = f"{label_name} {dist_str}"
+
+                # 시각화 (박스 및 텍스트 그리기)
+                try:
+                    # 결정된 색상(box_color)으로 박스 그리기
+                    cv2.rectangle(frame, pt1, pt2, box_color, 3)
+                    # 결정된 색상과 내용으로 글씨 쓰기
+                    cv2.putText(frame, label_text, (x1, y1-10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+                except Exception as e:
+                    self.get_logger().error(f"Drawing Error: {e}")
 
                 # ★ BARK 조건 체크 ★
                 if is_edible and is_close and is_centered:
                     speech_cmd = "bark"
                     final_label = label_name
                     final_dist = float(real_dist)
-                    
-                    # 짖는 상황 시각화 (화면에 텍스트 표시)
-                    cv2.putText(frame, "BARK!!!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 
-                                1.5, (0, 255, 255), 3)
-
+                 
+      
         # 5. 결과 발행 (Publish)
         self.pub_image.publish(self.br.cv2_to_imgmsg(frame, "bgr8"))
         
