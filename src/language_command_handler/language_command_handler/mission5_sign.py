@@ -13,22 +13,22 @@ import sys
 
 # Location A: First check-point (Look for Stop Sign here)
 COORD_A = {
-    'x': 1.0, 
-    'y': 0.0, 
-    'yaw': 0.0  # Radians
+    'x': -5.0, 
+    'y': 10.0, 
+    'yaw': 2.25  # Radians
 }
 
 # Location B: Destination if NO Stop Sign is found
 COORD_B = {
-    'x': 2.0, 
-    'y': -2.0, 
-    'yaw': 1.57
+    'x': -8.0, 
+    'y': 15.0, 
+    'yaw': -1.57
 }
 
 # Location C: Destination if Stop Sign IS found
 COORD_C = {
-    'x': 2.0, 
-    'y': 2.0, 
+    'x': 8.0, 
+    'y': 15.0, 
     'yaw': -1.57
 }
 

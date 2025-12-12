@@ -29,8 +29,11 @@ install(
     language_command_handler/go_back.py
     language_command_handler/stop.py
     language_command_handler/mission1_toilet.py
+    language_command_handler/mission2_food.py
     language_command_handler/mission3_cone.py
+    language_command_handler/mission4_box.py
     language_command_handler/mission5_sign.py
+    language_command_handler/mission6_nurse.py
   
 
   DESTINATION lib/${PROJECT_NAME}
