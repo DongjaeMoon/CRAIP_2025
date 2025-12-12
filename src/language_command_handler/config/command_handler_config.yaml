@@ -7,6 +7,7 @@ prompt: |
 
   # Actions Description:
   # - mission1.launch.py: Go to the toilet (restroom) or find the toilet.
+  # - mission5.launch.py: Move to the empty room without a stop sign.
   # - stop.py: Stop the robot immediately.
   # - go_front.py: Move forward.
   # - go_back.launch.py: Move backward.
@@ -29,3 +30,4 @@ action_candidates:
   launch:
     - go_back.launch.py
     - mission1.launch.py
+    - mission5.launch.py
