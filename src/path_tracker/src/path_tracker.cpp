@@ -262,7 +262,8 @@ void PathTracker::MainLoop() {
         
         // 0.2 m/s 이상으로 가라고 했는데, 실제로는 0.05 m/s도 안 나온다면? -> 벽에 박은 것
         // 조건 A: 물리적 속도 0에 가까움 (기존 로직)
-        bool velocity_stuck = (_prev_u.vx > 0.15 && std::abs(_state.v) < 0.1);
+        if (!_is_goal_reached_mode) {
+            bool velocity_stuck = (_prev_u.vx > 0.15 && std::abs(_state.v) < 0.1);
         
         // 조건 B: 카메라가 벽에 코를 박음 (새로운 로직)
         bool vision_stuck = _is_blind;
@@ -282,6 +283,8 @@ void PathTracker::MainLoop() {
             _recovery_count = 15; // 약 1.5초 동안 후진 (100ms * 15)
             _stuck_count = 0;
         }
+        }
+        
 
         if (_path_gen->GetActive()) {
             _GeneratePath();

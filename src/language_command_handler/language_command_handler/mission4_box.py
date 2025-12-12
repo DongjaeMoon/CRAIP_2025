@@ -11,21 +11,21 @@ from std_msgs.msg import Bool, String, Float32
 # =========================
 # FIXED GOAL (red area center)  <-- 너 맵 값으로 수정 필수
 # =========================
-GOAL_X = 2.0
-GOAL_Y = -3.0
+GOAL_X = 0.0
+GOAL_Y = 12.0
 
 # goal 중심까지 로봇이 "덜 가게" 만드는 오프셋 (미는 중 박스가 골 밖으로 나가는 리스크 완화)
 # goal 방향 반대쪽으로 이만큼 떨어진 지점을 push 목표로 삼음
-STOP_BEFORE_GOAL = 0.45   # 0.3~0.6 사이에서 튜닝 추천
+STOP_BEFORE_GOAL = 0.3   # 0.3~0.6 사이에서 튜닝 추천
 
 # =========================
 # BOX CANDIDATES (박스 중심 좌표 3개) <-- 맵 값으로 수정 필수
 # TA가 3개 후보 중 하나에 둔다고 했으니, 후보 좌표는 고정으로 둠
 # =========================
 BOX_CANDIDATES: List[Dict[str, float]] = [
-    {"name": "cand1", "box_x": 0.0, "box_y": 0.0},
-    {"name": "cand2", "box_x": 0.0, "box_y": 0.0},
-    {"name": "cand3", "box_x": 0.0, "box_y": 0.0},
+    {"name": "cand1", "box_x": 0.0, "box_y": 14.0},
+    {"name": "cand2", "box_x": 2.0, "box_y": 12.0},
+    {"name": "cand3", "box_x": -2.0, "box_y": 12.0},
 ]
 
 # =========================
