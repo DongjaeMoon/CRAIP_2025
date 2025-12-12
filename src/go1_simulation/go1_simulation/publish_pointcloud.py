@@ -9,6 +9,7 @@ import numpy as np
 import struct
 from rclpy.time import Time
 import time
+from std_msgs.msg import Bool
 
 
 class CameraHandler:
@@ -66,7 +67,11 @@ class CameraHandler:
             f'camera_{camera_name}/points',
             10
         )
-        
+        # [수정 2] Face 카메라일 경우에만 Blind 감지 Publisher 생성
+        self.blind_pub = None
+        if self.camera_name == 'face':
+            self.blind_pub = self.node.create_publisher(Bool, '/is_blind', 1)
+
         # Print information about the node
         self.node.get_logger().info(
             f'Camera handler initialized for {camera_name} camera '
@@ -148,6 +153,12 @@ class CameraHandler:
                 f'No valid depth values in {self.camera_name} image', 
                 throttle_duration_sec=1.0
             )
+            # [수정 3] Face 카메라인데 유효한 값이 하나도 없다 -> 벽에 박음 (True 발행)
+            if self.blind_pub is not None:
+                blind_msg = Bool()
+                blind_msg.data = True
+                self.blind_pub.publish(blind_msg)
+
             # Return empty point cloud
             msg = PointCloud2()
             msg.header = header
@@ -166,6 +177,12 @@ class CameraHandler:
             msg.row_step = 0
             msg.data = bytes()
             return msg
+        
+        # [수정 4] 유효한 값이 있다 -> 앞이 보임 (False 발행)
+        if self.blind_pub is not None:
+            blind_msg = Bool()
+            blind_msg.data = False
+            self.blind_pub.publish(blind_msg)
         
         # If there are valid depth values, create point cloud
         # Create pixel-wise coordinate arrays (W x H) - cached for performance

@@ -5,6 +5,7 @@ prompt: |
   You will take a natural language user command in English.
   Your task is to select exactly one appropriate action among the candidate list.
 
+<<<<<<< HEAD
   IMPORTANT RULES:
   - You MUST always select one mission or behavior.
   - You MUST NOT choose stop.py unless the user explicitly commands the robot to stop.
@@ -135,6 +136,19 @@ prompt: |
 
   ---------------------------------------------------------
   CANDIDATES:
+=======
+  # Actions Description:
+  # - mission1.launch.py: Go to the toilet (restroom) or find the toilet.
+  # - mission3_red.launch.py: Find and go to the RED cone.
+  # - mission3_blue.launch.py: Find and go to the BLUE cone.
+  # - mission3_green.launch.py: Find and go to the GREEN cone.
+  # - mission5.launch.py: Move to the empty room without a stop sign.
+  # - stop.py: Stop the robot immediately.
+  # - go_front.py: Move forward.
+  # - go_back.launch.py: Move backward.
+
+  Here is the list of candidates:
+>>>>>>> 86942b050c5e13b46640e22690def7cea8ef79af
   ACTION_CANDIDATES
 
   USER COMMAND:
@@ -147,9 +161,17 @@ action_candidates:
   launch:
     - go_back.launch.py
     - mission1.launch.py
+<<<<<<< HEAD
     - mission2.launch.py
     - mission3.launch.py
     - mission4.launch.py
     - mission5.launch.py
     - mission6.launch.py
 
+=======
+    - mission3_red.launch.py    
+    - mission3_green.launch.py 
+    - mission3_blue.launch.py
+    - mission5.launch.py
+   
+>>>>>>> 86942b050c5e13b46640e22690def7cea8ef79af

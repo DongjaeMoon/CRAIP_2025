@@ -98,6 +98,17 @@ class PathTracker : public rclcpp::Node {
 
         int _average;
 
+        // [추가] 탈출 모드 관련 변수
+        int _stuck_count = 0;        // 갇혀있는지 카운트
+        int _recovery_count = 0;     // 뒤로 가는 동작 카운트
+        bool _is_recovery_mode = false; // 현재 탈출 모드인지 여부
+        rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr _blind_sub;
+        rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr _goal_reached_pub;
+        bool _is_blind = false;
+
+        // 콜백 함수 선언
+        void _BlindCallback(const std_msgs::msg::Bool::SharedPtr msg);
+
         int _K;
         int _Window;
         int _Order;

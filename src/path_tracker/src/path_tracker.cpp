@@ -1,5 +1,6 @@
 #include "path_tracker.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
+#include "std_msgs/msg/bool.hpp" // 이거 꼭 추가해야 합니다!
 
 PathTracker::PathTracker(const std::string& pkg_loc) : Node("path_tracker") 
 {
@@ -25,6 +26,7 @@ PathTracker::PathTracker(const std::string& pkg_loc) : Node("path_tracker")
     _clicked_goal_sub   = create_subscription<geometry_msgs::msg::PointStamped>(_clicked_goal_topic, 10, std::bind(&PathTracker::_ClickedGoalCallback, this, std::placeholders::_1));
     _emergency_sub      = create_subscription<std_msgs::msg::Bool>(_emergency_topic, 1, std::bind(&PathTracker::_EmergencyCallback, this, std::placeholders::_1));
     _cost_map_sub       = create_subscription<nav_msgs::msg::OccupancyGrid>(_cost_map_topic, 10, std::bind(&PathTracker::_CostMapCallback, this, std::placeholders::_1));
+    _blind_sub = create_subscription<std_msgs::msg::Bool>("/is_blind", 10, std::bind(&PathTracker::_BlindCallback, this, std::placeholders::_1));
 
     _gear_pub           = create_publisher<std_msgs::msg::Bool>(_gear_topic, 1);
     _twist_pub          = create_publisher<geometry_msgs::msg::Twist>(_cmd_ctrl_topic, 1);
@@ -37,6 +39,8 @@ PathTracker::PathTracker(const std::string& pkg_loc) : Node("path_tracker")
     _dummy_path_pub     = create_publisher<nav_msgs::msg::Path>(get_name() + std::string("/dummy_path"), 1);
     _tracking_info_pub  = create_publisher<geometry_msgs::msg::Point>(get_name() + std::string("/tracking_info"), 1);
     _lp_subgoal_pub     = create_publisher<visualization_msgs::msg::Marker>(get_name() + std::string("/lp_subgoal"), 1);
+    // [추가] 도착 신호 발행자 생성
+    _goal_reached_pub   = create_publisher<std_msgs::msg::Bool>("/goal_reached", 10);
     
     _timer              = create_wall_timer(std::chrono::milliseconds(100), std::bind(&PathTracker::MainLoop, this));
 
@@ -230,6 +234,55 @@ void PathTracker::MainLoop() {
 
         _UpdateState();
 
+        //추가 1211
+        if (_is_recovery_mode) {
+            geometry_msgs::msg::Twist recovery_cmd;
+            recovery_cmd.linear.x = -0.3; // 뒤로 천천히 (-0.3 m/s)
+            recovery_cmd.angular.z = 0.0; // 회전 없이 똑바로 뒤로
+            
+            _twist_pub->publish(recovery_cmd);
+            
+            _recovery_count--;
+            std::cout << prColor::Red << "Stuck Detected! Backing up... " << _recovery_count << prColor::End << std::endl;
+
+            // 탈출 시간이 끝났으면 모드 해제 및 초기화
+            if (_recovery_count <= 0) {
+                _is_recovery_mode = false;
+                _stuck_count = 0;
+                ResetPathTracker(); // MPPI 내부 상태(과거의 전진 명령 등)를 리셋해서 정신 차리게 함
+                std::cout << "Recovery Finished. Resuming MPPI." << std::endl;
+            }
+            return; // MPPI 로직 실행하지 않고 리턴
+        }
+
+        // 2. 끼임 감지 로직 (Stuck Detection)
+        // 조건: "목표 속도는 높은데(가라고 하는데), 실제 속도는 0에 가깝다(안 간다)"
+        // _prev_u.vx : 직전에 MPPI가 내린 선속도 명령
+        // _state.v   : 현재 로봇의 실제 선속도 (Odometry)
+        
+        // 0.2 m/s 이상으로 가라고 했는데, 실제로는 0.05 m/s도 안 나온다면? -> 벽에 박은 것
+        // 조건 A: 물리적 속도 0에 가까움 (기존 로직)
+        bool velocity_stuck = (_prev_u.vx > 0.15 && std::abs(_state.v) < 0.1);
+        
+        // 조건 B: 카메라가 벽에 코를 박음 (새로운 로직)
+        bool vision_stuck = _is_blind;
+
+        // [핵심] 둘 중 하나만 걸려도 Stuck으로 간주!
+        if (velocity_stuck || vision_stuck) {
+            _stuck_count++;
+            // 카메라가 박았으면 더 빨리 반응하도록 카운트 2배 증가 (선택사항)
+            if (vision_stuck) _stuck_count+=5; 
+        } else {
+            if (_stuck_count > 0) _stuck_count--; 
+        }
+
+        // 10번 연속(약 1초) 동안 벽에 박혀있으면 탈출 모드 발동
+        if (_stuck_count > 15) { 
+            _is_recovery_mode = true;
+            _recovery_count = 15; // 약 1.5초 동안 후진 (100ms * 15)
+            _stuck_count = 0;
+        }
+
         if (_path_gen->GetActive()) {
             _GeneratePath();
             if (_path.size() > 1) {
@@ -268,7 +321,7 @@ void PathTracker::MainLoop() {
             while (yaw_diff < -M_PI) yaw_diff += 2.0 * M_PI;
 
             // 2. 각도가 틀어져 있다면? -> 제자리 회전 명령 수행
-            if (std::abs(yaw_diff) > 0.05) { // 0.05 rad (약 3도) 이상 차이나면 회전
+            if (std::abs(yaw_diff) > 0.03) { // 0.05 rad (약 3도) 이상 차이나면 회전
                 geometry_msgs::msg::Twist rotate_cmd;
                 rotate_cmd.linear.x = 0.0;   // 직진 절대 금지
                 rotate_cmd.linear.y = 0.0;
@@ -292,6 +345,12 @@ void PathTracker::MainLoop() {
                 std::cout << "Aligned Finished." << std::endl;
                 std::cout << "dx:" << dx << " dy:" << dy << " dyaw:" << yaw_diff <<std::endl;
                 _path.clear();   // 경로 삭제 (이제 로봇은 멈춤 상태가 됨)
+                _is_goal_reached_mode = false; 
+
+                // 2. [핵심] Planner에게 "목표 지워!"라고 신호 보내기
+                std_msgs::msg::Bool done_msg;
+                done_msg.data = true;
+                _goal_reached_pub->publish(done_msg);
             } 
             return; 
             // 3. 거리도 맞고(20cm 이내), 각도도 맞았다면(3도 이내)? -> 진짜 도착!
@@ -957,6 +1016,8 @@ void PathTracker::_UpdateSolution(const std::vector<Action>& weighted_noise) {
     for (int t = 0; t < _dynamics.GetT(); t++) {
         solution[t] = _us[t] + weighted_noise[t];
     }
+    // [수정] 최종 명령을 보내기 전에 물리적 한계(maxLinVel)로 잘라내기
+    _ClipAction(solution[0]);
 
     _PubAction(solution[0]);
 
@@ -1094,6 +1155,10 @@ void PathTracker::_UpdateSubgoal(const std::vector<PathStamp>& ref){
     if (_vis_subgoal) {
         PathTracker::_VisLpSubgoal(lp_global_subgoal);    // red
     }
+}
+
+void PathTracker::_BlindCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+    _is_blind = msg->data;
 }
 
 void PathTracker::PrintConfig() {

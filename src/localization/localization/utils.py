@@ -75,7 +75,8 @@ def icp_2d(previous_pcd,
            current_pcd,
            max_iterations=50,
            tolerance=1e-6,
-           distance_threshold=None):
+           distance_threshold=None,
+           init_yaw=0.0):
     """
     Iterative Closest Point (ICP) algorithm for aligning 2D point clouds.
 
@@ -101,7 +102,7 @@ def icp_2d(previous_pcd,
     assert current_pcd.ndim == 2 and current_pcd.shape[1] == 2
 
     # Step 1: Initialize transformation
-    R, t = _initialize_alignment(current_pcd, previous_pcd)  # R: (2,2), t: (2,)
+    R, t = _initialize_alignment(current_pcd, previous_pcd, init_yaw)  # R: (2,2), t: (2,)
     E_prev = np.inf
 
     for _ in range(max_iterations):
@@ -174,7 +175,7 @@ def icp_2d(previous_pcd,
     return T, fitness, inlier_count
 
 
-def _initialize_alignment(current_pcd, previous_pcd):
+def _initialize_alignment(current_pcd, previous_pcd, init_yaw=0.0):
     """
     Initialize alignment between current and previous point clouds.
     
@@ -187,7 +188,9 @@ def _initialize_alignment(current_pcd, previous_pcd):
         t: (2,) translation vector aligning centroids
     """
     # Initialize with identity rotation
-    R = np.eye(2)
+    c = np.cos(init_yaw)
+    s = np.sin(init_yaw)
+    R = np.array([[c, -s], [s, c]])
     
     # Initialize translation by aligning centroids
     # This provides a much better starting point than t=0

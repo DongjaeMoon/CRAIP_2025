@@ -255,7 +255,7 @@ def generate_launch_description():
     #ld.add_action(start_gazebo_ros_spawner_cmd)
     # 5초(period=5.0) 뒤에 로봇 스폰 명령(actions=[...])을 실행합니다.
     delayed_spawn_robot = TimerAction(
-        period=10.0, 
+        period=13.0, 
         actions=[start_gazebo_ros_spawner_cmd]
     )
     ld.add_action(delayed_spawn_robot)

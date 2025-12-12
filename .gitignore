@@ -3,3 +3,5 @@ install/
 log/
 .vscode/
 v-hacd/
+dataset/
+Anaconda3-*.sh
