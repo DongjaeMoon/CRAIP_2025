@@ -7,6 +7,9 @@ prompt: |
 
   # Actions Description:
   # - mission1.launch.py: Go to the toilet (restroom) or find the toilet.
+  # - mission3_red.launch.py: Find and go to the RED cone.
+  # - mission3_blue.launch.py: Find and go to the BLUE cone.
+  # - mission3_green.launch.py: Find and go to the GREEN cone.
   # - mission5.launch.py: Move to the empty room without a stop sign.
   # - stop.py: Stop the robot immediately.
   # - go_front.py: Move forward.
@@ -30,4 +33,8 @@ action_candidates:
   launch:
     - go_back.launch.py
     - mission1.launch.py
+    - mission3_red.launch.py    
+    - mission3_green.launch.py 
+    - mission3_blue.launch.py
     - mission5.launch.py
+   
