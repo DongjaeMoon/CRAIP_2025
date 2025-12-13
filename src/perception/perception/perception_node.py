@@ -37,8 +37,7 @@ class PerceptionNode(Node):
         rgb_sub = message_filters.Subscriber(self, Image, '/camera_top/image')
         depth_sub = message_filters.Subscriber(self, Image, '/camera_top/depth')
 
-        # 시간 동기화 (slop=1.0으로 설정하여 끊김 방지)
-        ts = message_filters.ApproximateTimeSynchronizer([rgb_sub, depth_sub], 10, 1.0)
+        ts = message_filters.ApproximateTimeSynchronizer([rgb_sub, depth_sub], 10, 0.1)
         ts.registerCallback(self.listener_callback)
         
         self.get_logger().info("Perception Node Started! Waiting for images...")
@@ -46,9 +45,7 @@ class PerceptionNode(Node):
     def listener_callback(self, rgb_msg, depth_msg):
         try:
             frame = self.br.imgmsg_to_cv2(rgb_msg, "bgr8")
-            # 메모리 정렬
-            frame = np.ascontiguousarray(frame)
-            depth_frame = self.br.imgmsg_to_cv2(depth_msg, "32FC1") 
+            depth_frame = self.br.imgmsg_to_cv2(depth_msg, "32FC1")
         except Exception as e:
             self.get_logger().error(f"Image conversion error: {e}")
             return
@@ -70,19 +67,25 @@ class PerceptionNode(Node):
                 x2, y2 = int(coords[2]), int(coords[3])
                 pt1 = (x1, y1)
                 pt2 = (x2, y2)
-
+                
                 cls = int(box.cls[0])           
                 label_name = self.model.names[cls] 
 
+                # ★★★ [수정됨] 이름 바꿔치기 (Masquerade) ★★★
+                # 여기서 이름을 바꿔버리면 이후의 모든 로직(박스색, 토픽발행)이 바뀐 이름으로 동작합니다.
+                if label_name == "bad_pizza":
+                    label_name = "good_pizza"  # 나쁜 피자를 좋은 피자로 둔갑
+                elif label_name == "good_pizza":
+                    label_name = "bad_pizza"   # 좋은 피자를 나쁜 피자로 둔갑
+
+                # 중심점 계산
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
-
                 cx_safe = np.clip(cx, 0, img_w - 1)
                 cy_safe = np.clip(cy, 0, img_h - 1)
                 
                 # 거리 측정
                 raw_dist = depth_frame[cy_safe, cx_safe]
-
                 if np.isnan(raw_dist) or np.isinf(raw_dist):
                     real_dist = 0.0
                     dist_str = "??"
@@ -90,18 +93,11 @@ class PerceptionNode(Node):
                     real_dist = float(raw_dist)
                     dist_str = f"{real_dist:.2f}m"
 
-                # ★★★ [수정된 판단 로직] ★★★
-                # C. 식용 여부 판단 (Pizza 특수 규칙 적용)
-                if label_name == "bad_pizza":
-                    # 나쁜 피자는 먹는다 (초록색)
-                    is_edible = True
-                elif label_name == "good_pizza":
-                    # 좋은 피자는 안 먹는다 (빨간색)
-                    is_edible = False
-                else:
-                    # 나머지는 이름에 'good'이나 'fresh'가 있으면 식용
-                    is_edible = ("good" in label_name) or ("fresh" in label_name)
-
+                # 4. 판단 로직
+                # 이름이 이미 바뀌었으므로, 표준 로직("good"이 들어있으면 식용)을 사용하면 됩니다.
+                # (실제 bad_pizza -> 이름 good_pizza -> 식용O -> 초록색)
+                is_edible = ("good" in label_name)
+                
                 # 시각화 색상 결정
                 if is_edible:
                     box_color = (0, 255, 0)  # 초록색 (Green)
@@ -117,27 +113,25 @@ class PerceptionNode(Node):
                 except Exception as e:
                     self.get_logger().error(f"Drawing Error: {e}")
 
-                # A. 거리 조건: 3m 이내
+                # 조건 체크 (가깝고 중앙이면)
                 is_close = (real_dist > 0.1) and (real_dist <= 3.0)
-                
-                # B. 위치 조건: 중앙
                 left_limit = img_w * 0.2
                 right_limit = img_w * 0.8
                 is_centered = left_limit < cx < right_limit
                 
-                # ★ BARK 조건 체크 ★ (식용이고 + 가깝고 + 중앙이면)
+                # 식용으로 판별되면(바뀐 이름 기준) 짖기
                 if is_edible and is_close and is_centered:
                     speech_cmd = "bark"
-                    final_label = label_name
+                    final_label = label_name # 바뀐 이름이 저장됨
                     final_dist = float(real_dist)
                     
-                    cv2.putText(frame, "BARK!!!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 
-                                1.5, (0, 255, 255), 3)
-
+                
+      
+        # 결과 발행
         self.pub_image.publish(self.br.cv2_to_imgmsg(frame, "bgr8"))
         
         msg_label = String()
-        msg_label.data = final_label
+        msg_label.data = final_label # 바뀐 이름("good_pizza" or "bad_pizza")이 전송됨
         self.pub_label.publish(msg_label)
 
         msg_dist = Float32()
