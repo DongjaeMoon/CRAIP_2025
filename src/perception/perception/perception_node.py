@@ -14,18 +14,15 @@ class PerceptionNode(Node):
     def __init__(self):
         super().__init__('perception_node')
 
-        # 1. 모델 경로 설정 (setup.py에서 복사된 위치를 자동으로 찾음)
+        # 1. 모델 경로 설정
         package_share_directory = get_package_share_directory('perception')
         model_path = os.path.join(package_share_directory, 'weights', 'best(1).pt')
-
-        
 
         self.get_logger().info(f'Loading YOLO model from: {model_path}')
         try:
             self.model = YOLO(model_path)
         except Exception as e:
             self.get_logger().error(f"Failed to load model: {e}")
-            # 모델 로드 실패 시 안전장치 (기본 모델 사용)
             self.model = YOLO("yolov8n.pt")
 
         # 2. Publishers
@@ -34,114 +31,109 @@ class PerceptionNode(Node):
         self.pub_dist = self.create_publisher(Float32, '/detections/distance', 10)
         self.pub_speech = self.create_publisher(String, '/robot_dog/speech', 10)
 
-        # 3. Subscribers (Time Synchronizer)
+        # 3. Subscribers
         self.br = CvBridge()
         
-        # 토픽 이름 확인 필수! (Depth와 Image가 짝이 맞아야 함)
         rgb_sub = message_filters.Subscriber(self, Image, '/camera_top/image')
         depth_sub = message_filters.Subscriber(self, Image, '/camera_top/depth')
 
-        # 두 이미지의 시간을 맞춰주는 동기화 도구 (slop=0.1초 오차 허용)
-        ts = message_filters.ApproximateTimeSynchronizer([rgb_sub, depth_sub], 10, 0.1)
+        # 시간 동기화 (slop=1.0으로 설정하여 끊김 방지)
+        ts = message_filters.ApproximateTimeSynchronizer([rgb_sub, depth_sub], 10, 1.0)
         ts.registerCallback(self.listener_callback)
         
         self.get_logger().info("Perception Node Started! Waiting for images...")
 
     def listener_callback(self, rgb_msg, depth_msg):
-        # 1. 이미지 변환
         try:
             frame = self.br.imgmsg_to_cv2(rgb_msg, "bgr8")
-            depth_frame = self.br.imgmsg_to_cv2(depth_msg, "32FC1") # 미터 단위 (Float32)
+            # 메모리 정렬
+            frame = np.ascontiguousarray(frame)
+            depth_frame = self.br.imgmsg_to_cv2(depth_msg, "32FC1") 
         except Exception as e:
             self.get_logger().error(f"Image conversion error: {e}")
             return
 
         img_h, img_w, _ = frame.shape
 
-        # 2. YOLO 추론
+        # YOLO 추론
         results = self.model(frame, verbose=False)
         
-        # 기본값 설정
         final_label = "None"
         final_dist = 0.0
         speech_cmd = "None"
         
-        # 감지된 물체 처리
         for result in results:
             boxes = result.boxes
             for box in boxes:
-                # 좌표 및 정보 추출
                 coords = box.xyxy[0].cpu().numpy()
-                
-                # 2. 정수형(int)으로 명확하게 변환
-                x1, y1, x2, y2 = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
+                x1, y1 = int(coords[0]), int(coords[1])
+                x2, y2 = int(coords[2]), int(coords[3])
                 pt1 = (x1, y1)
                 pt2 = (x2, y2)
-                # 3. 로그로 좌표 확인 (터미널에 좌표가 찍히는지 보세요!)
-                self.get_logger().info(f"Drawing Box at: {pt1} ~ {pt2}")                
-                cls=int(box.cls[0])           
-                label_name = self.model.names[cls] # 예: fresh_apple, rotten_banana
 
-                # 중심점 계산
+                cls = int(box.cls[0])           
+                label_name = self.model.names[cls] 
+
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
 
-                # 3. 거리 측정 (Depth 이미지에서 중심점의 깊이값 읽기)
-                # 좌표가 이미지 밖으로 나가지 않게 보호
                 cx_safe = np.clip(cx, 0, img_w - 1)
                 cy_safe = np.clip(cy, 0, img_h - 1)
                 
-                # ★★★ [수정된 부분 시작] ★★★
-                # Depth 값 읽기
+                # 거리 측정
                 raw_dist = depth_frame[cy_safe, cx_safe]
 
-                # 거리값이 이상하면(NaN, Inf) 무시하지 말고 0.0으로 처리!
                 if np.isnan(raw_dist) or np.isinf(raw_dist):
                     real_dist = 0.0
                     dist_str = "??"
                 else:
                     real_dist = float(raw_dist)
                     dist_str = f"{real_dist:.2f}m"
-                # ★★★ [수정된 부분 끝] ★★★
-                # 4. 판단 로직 (Rule)
-                # A. 거리 조건: 3m 이내
-                is_close = real_dist <= 3.0
-                
-                # B. 위치 조건: 가로의 가운데 3/5 영역 (0.2 ~ 0.8)
-                left_limit = img_w * 0.2
-                right_limit = img_w * 0.8
-                is_centered = left_limit < cx < right_limit
-                
-                # C. 종류 조건: 'fresh'가 들어간 이름만 식용 (fresh_apple 등)
-                is_edible = "good" in label_name
 
-                # 시각화 (박스 그리기)
+                # ★★★ [수정된 판단 로직] ★★★
+                # C. 식용 여부 판단 (Pizza 특수 규칙 적용)
+                if label_name == "bad_pizza":
+                    # 나쁜 피자는 먹는다 (초록색)
+                    is_edible = True
+                elif label_name == "good_pizza":
+                    # 좋은 피자는 안 먹는다 (빨간색)
+                    is_edible = False
+                else:
+                    # 나머지는 이름에 'good'이나 'fresh'가 있으면 식용
+                    is_edible = ("good" in label_name) or ("fresh" in label_name)
+
+                # 시각화 색상 결정
                 if is_edible:
                     box_color = (0, 255, 0)  # 초록색 (Green)
                 else:
                     box_color = (0, 0, 255)  # 빨간색 (Red)
 
-                # 표시할 텍스트 설정 (라벨 이름 + 거리)
                 label_text = f"{label_name} {dist_str}"
 
-                # 시각화 (박스 및 텍스트 그리기)
                 try:
-                    # 결정된 색상(box_color)으로 박스 그리기
                     cv2.rectangle(frame, pt1, pt2, box_color, 3)
-                    # 결정된 색상과 내용으로 글씨 쓰기
                     cv2.putText(frame, label_text, (x1, y1-10), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
                 except Exception as e:
                     self.get_logger().error(f"Drawing Error: {e}")
 
-                # ★ BARK 조건 체크 ★
+                # A. 거리 조건: 3m 이내
+                is_close = (real_dist > 0.1) and (real_dist <= 3.0)
+                
+                # B. 위치 조건: 중앙
+                left_limit = img_w * 0.2
+                right_limit = img_w * 0.8
+                is_centered = left_limit < cx < right_limit
+                
+                # ★ BARK 조건 체크 ★ (식용이고 + 가깝고 + 중앙이면)
                 if is_edible and is_close and is_centered:
                     speech_cmd = "bark"
                     final_label = label_name
                     final_dist = float(real_dist)
-                 
-      
-        # 5. 결과 발행 (Publish)
+                    
+                    cv2.putText(frame, "BARK!!!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 
+                                1.5, (0, 255, 255), 3)
+
         self.pub_image.publish(self.br.cv2_to_imgmsg(frame, "bgr8"))
         
         msg_label = String()
