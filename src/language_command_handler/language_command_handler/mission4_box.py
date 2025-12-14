@@ -1,71 +1,82 @@
 #!/usr/bin/env python3
 import math
 import time
+import threading
 from typing import Optional, Dict, List
 
 import rclpy
 from rclpy.node import Node
+
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Bool, String, Float32
+from std_msgs.msg import String, Float32MultiArray
 
 # =========================
-# FIXED GOAL (red area center)  <-- 너 맵 값으로 수정 필수
+# FIXED GOAL (map frame)
 # =========================
 GOAL_X = 0.0
 GOAL_Y = 12.0
-
-# goal 중심까지 로봇이 "덜 가게" 만드는 오프셋 (미는 중 박스가 골 밖으로 나가는 리스크 완화)
-# goal 방향 반대쪽으로 이만큼 떨어진 지점을 push 목표로 삼음
-STOP_BEFORE_GOAL = 0.3   # 0.3~0.6 사이에서 튜닝 추천
+STOP_BEFORE_GOAL = 0.3
 
 # =========================
-# BOX CANDIDATES (박스 중심 좌표 3개) <-- 맵 값으로 수정 필수
-# TA가 3개 후보 중 하나에 둔다고 했으니, 후보 좌표는 고정으로 둠
+# BOX CANDIDATES
 # =========================
 BOX_CANDIDATES: List[Dict[str, float]] = [
-    {"name": "cand1", "box_x": 0.0, "box_y": 14.0},
     {"name": "cand2", "box_x": 2.0, "box_y": 12.0},
+    {"name": "cand1", "box_x": 0.0, "box_y": 14.0},
     {"name": "cand3", "box_x": -2.0, "box_y": 12.0},
 ]
 
 # =========================
-# Perception topics (네 perception_node.py 그대로)
+# Perception
 # =========================
-TOPIC_LABEL = "/detections/labels"
-TOPIC_DIST  = "/detections/distance"   # 선택적으로 판정 강화할 때 사용
-
-# label 가정: 학습하면 "box"가 나온다고 가정
+TOPIC_LABELS = "/detections/labels"
+TOPIC_DISTS  = "/detections/distances"
 BOX_LABEL = "box"
-
-# 거리 게이트(너무 멀리 보이는 걸 후보 박스로 착각하는 것 방지)
-# depth가 0.0이면 (NaN 처리 결과) 신뢰 낮으니 제외
-DIST_MIN = 0.25
 DIST_MAX = 3.0
 
-# 관찰 위치에서 샘플링으로 안정화
+# =========================
+# Sampling
+# =========================
 SAMPLES = 10
 SAMPLE_INTERVAL = 0.08
 MIN_HITS = 2
 
 # =========================
-# Navigation / timing
+# Navigation Constants
 # =========================
-STEP_TIMEOUT = 35.0
-SETTLE_TIME = 0.4
+STEP_TIMEOUT = 40.0
+SETTLE_TIME = 0.7
+
+# [수정] 도달 판정 기준 강화
+GOAL_RADIUS = 0.3       # 1.0m는 너무 커서 0.3m로 줄임 (상황에 맞게 조정)
+GOAL_YAW_TOLERANCE = 0.15  # 약 8.5도 오차 허용 (rad)
 
 # =========================
-# Geometry offsets (박스 기준으로 obs/pre 위치 자동 생성)
+# Geometry
 # =========================
-OBS_OFFSET = 1.2    # 박스 뒤쪽(밀기 방향 반대쪽)에서 관찰할 거리
-PRE_OFFSET = 0.75   # 박스 바로 뒤(밀기 시작 위치)
+OBS_OFFSET = 1.9
+PRE_OFFSET = 0.75
+
+TOPIC_LOCAL_POSE = "/go1_pose"
 
 
 def yaw_to_quaternion(yaw: float):
-    qx = 0.0
-    qy = 0.0
-    qz = math.sin(yaw / 2.0)
-    qw = math.cos(yaw / 2.0)
-    return qx, qy, qz, qw
+    return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+
+# [추가] 쿼터니언 -> Yaw 변환 함수
+def quaternion_to_yaw(q) -> float:
+    # q는 geometry_msgs.msg.Quaternion 또는 유사 객체 (x, y, z, w)
+    siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+# [추가] 각도 정규화 (-PI ~ PI)
+def normalize_angle(angle):
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
 
 
 class Mission4Box(Node):
@@ -74,36 +85,45 @@ class Mission4Box(Node):
 
         self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
 
-        self.goal_reached = False
-        self.goal_sent = False
-        self.finished = False
-        self.create_subscription(Bool, "/goal_reached", self.goal_reached_cb, 10)
+        self.pose_sub = self.create_subscription(PoseStamped, TOPIC_LOCAL_POSE, self.pose_cb, 10)
+        self.labels_sub = self.create_subscription(String, TOPIC_LABELS, self.labels_cb, 10)
+        self.dists_sub = self.create_subscription(Float32MultiArray, TOPIC_DISTS, self.dists_cb, 10)
 
-        self.last_label: str = "None"
-        self.last_dist: float = 0.0
-        self.create_subscription(String, TOPIC_LABEL, self.label_cb, 10)
-        self.create_subscription(Float32, TOPIC_DIST, self.dist_cb, 10)
+        self.cur_x: Optional[float] = None
+        self.cur_y: Optional[float] = None
+        self.cur_yaw: Optional[float] = None  # [추가] 현재 Yaw 저장
 
-        self.timer = self.create_timer(0.8, self.run_once)
-        self.started = False
+        self.goal_x: Optional[float] = None
+        self.goal_y: Optional[float] = None
+        self.goal_yaw: Optional[float] = None # [추가] 목표 Yaw 저장
 
-        self.get_logger().info("Mission 4 started (fixed goal, candidate scan, perception-based).")
+        self.last_labels: List[str] = []
+        self.last_dists: List[float] = []
 
-    # ---------- callbacks ----------
-    def goal_reached_cb(self, msg: Bool):
-        if self.finished:
-            return
-        if msg.data and self.goal_sent:
-            self.goal_reached = True
-            self.get_logger().info(">>> /goal_reached = True")
+        self.mission_thread = threading.Thread(target=self.mission_logic)
+        self.mission_thread.start()
 
-    def label_cb(self, msg: String):
-        self.last_label = msg.data.strip()
+        self.get_logger().info("Mission4Box started (XY + Yaw check).")
 
-    def dist_cb(self, msg: Float32):
-        self.last_dist = float(msg.data)
+    # =========================
+    # Callbacks
+    # =========================
+    def pose_cb(self, msg: PoseStamped):
+        self.cur_x = msg.pose.position.x
+        self.cur_y = msg.pose.position.y
+        # [추가] 쿼터니언을 Yaw로 변환하여 저장
+        self.cur_yaw = quaternion_to_yaw(msg.pose.orientation)
 
-    # ---------- nav helpers ----------
+    def labels_cb(self, msg: String):
+        s = msg.data.strip()
+        self.last_labels = [] if (not s or s == "None") else [t.strip() for t in s.split(",") if t.strip()]
+
+    def dists_cb(self, msg: Float32MultiArray):
+        self.last_dists = list(msg.data)
+
+    # =========================
+    # Navigation helpers
+    # =========================
     def publish_goal(self, x: float, y: float, yaw: float):
         g = PoseStamped()
         g.header.frame_id = "map"
@@ -116,121 +136,157 @@ class Mission4Box(Node):
         g.pose.orientation.z = qz
         g.pose.orientation.w = qw
 
-        self.goal_reached = False
-        self.goal_sent = True
+        self.goal_x = float(x)
+        self.goal_y = float(y)
+        self.goal_yaw = float(yaw) # [추가]
+
         self.goal_pub.publish(g)
-        self.get_logger().info(f"Publish /goal_pose: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}")
+        self.get_logger().info(f"PUB GOAL: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}")
+
+    # [수정] 거리와 각도 모두 체크하는 함수
+    def check_reached(self) -> bool:
+        if self.cur_x is None or self.goal_x is None or self.cur_yaw is None:
+            return False
+
+        # 1. 거리 체크
+        dist = math.hypot(self.goal_x - self.cur_x, self.goal_y - self.cur_y)
+        
+        # 2. 각도 체크 (중요: -PI ~ PI 경계 처리)
+        yaw_diff = normalize_angle(self.goal_yaw - self.cur_yaw)
+        yaw_err = abs(yaw_diff)
+
+        # 디버깅 로그 (너무 자주 찍히면 주석 처리)
+        # self.get_logger().info(f"DistErr: {dist:.2f}, YawErr: {yaw_err:.2f}")
+
+        if dist <= GOAL_RADIUS and yaw_err <= GOAL_YAW_TOLERANCE:
+            return True
+        return False
 
     def wait_goal_reached(self, timeout_s: float) -> bool:
         t0 = time.time()
         while rclpy.ok():
-            if self.goal_reached:
+            # [수정] check_reached() 사용
+            if self.check_reached():
+                self.get_logger().info("--> Reached Goal (XY & Yaw)!")
                 return True
+            
             if time.time() - t0 > timeout_s:
+                self.get_logger().warn(f"Goal Timeout! (Wait: {timeout_s}s)")
+                # 타임아웃 시 현재 오차 출력
+                if self.cur_x is not None and self.goal_x is not None:
+                    dist = math.hypot(self.goal_x - self.cur_x, self.goal_y - self.cur_y)
+                    yaw_diff = abs(normalize_angle(self.goal_yaw - self.cur_yaw))
+                    self.get_logger().warn(f"Final Error -> Dist: {dist:.2f}, Yaw: {yaw_diff:.2f}")
                 return False
-            rclpy.spin_once(self, timeout_sec=0.1)
+            
+            time.sleep(0.1)
         return False
 
-    # ---------- perception check ----------
-    def box_hit_now(self) -> bool:
-        if self.last_label.lower() != BOX_LABEL:
-            return False
-        # distance가 0이면(깊이 이상값) 신뢰 낮으니 제외
-        if not (DIST_MIN <= self.last_dist <= DIST_MAX):
-            return False
-        return True
+    def wait_pose_ready(self, timeout_s: float = 5.0) -> bool:
+        t0 = time.time()
+        while rclpy.ok():
+            if self.cur_x is not None:
+                return True
+            if time.time() - t0 > timeout_s:
+                self.get_logger().error("No pose received.")
+                return False
+            time.sleep(0.05)
+        return False
+
+    # =========================
+    # Perception
+    # =========================
+    def get_nearest_box_dist(self) -> Optional[float]:
+        labels = list(self.last_labels)
+        dists = list(self.last_dists)
+        n = min(len(labels), len(dists))
+        if n == 0:
+            return None
+        best = None
+        for i in range(n):
+            if labels[i] == BOX_LABEL:
+                d = float(dists[i])
+                if d > 0.0 and (best is None or d < best):
+                    best = d
+        return best
 
     def box_present_check(self) -> bool:
         hits = 0
         for _ in range(SAMPLES):
-            rclpy.spin_once(self, timeout_sec=0.05)
-            if self.box_hit_now():
+            d = self.get_nearest_box_dist()
+            if d is not None and 0.0 < d <= DIST_MAX:
                 hits += 1
             time.sleep(SAMPLE_INTERVAL)
-
-        self.get_logger().info(
-            f"Perception: hits={hits}/{SAMPLES}, label={self.last_label}, dist={self.last_dist:.2f}"
-        )
+        self.get_logger().info(f"[Check] hits={hits}/{SAMPLES}")
         return hits >= MIN_HITS
 
-    # ---------- geometry ----------
-    def yaw_box_to_goal(self, box_x: float, box_y: float) -> float:
-        return math.atan2(GOAL_Y - box_y, GOAL_X - box_x)
+    # =========================
+    # Geometry Helper
+    # =========================
+    def yaw_box_to_goal(self, bx, by):
+        return math.atan2(GOAL_Y - by, GOAL_X - bx)
 
-    def obs_pose_from_box(self, box_x: float, box_y: float, yaw: float):
-        # 박스 뒤쪽(밀기 방향 반대쪽)으로 OBS_OFFSET 떨어진 점
-        ox = box_x - math.cos(yaw) * OBS_OFFSET
-        oy = box_y - math.sin(yaw) * OBS_OFFSET
-        return ox, oy, yaw
+    def obs_pose_from_box(self, bx, by, yaw):
+        return (bx - math.cos(yaw) * OBS_OFFSET,
+                by - math.sin(yaw) * OBS_OFFSET,
+                yaw)
 
-    def pre_pose_from_box(self, box_x: float, box_y: float, yaw: float):
-        # 박스 뒤쪽(밀기 시작 위치)으로 PRE_OFFSET 떨어진 점
-        px = box_x - math.cos(yaw) * PRE_OFFSET
-        py = box_y - math.sin(yaw) * PRE_OFFSET
-        return px, py, yaw
+    def pre_pose_from_box(self, bx, by, yaw):
+        return (bx - math.cos(yaw) * PRE_OFFSET,
+                by - math.sin(yaw) * PRE_OFFSET,
+                yaw)
 
-    def push_goal_from_goal(self, yaw: float):
-        # goal 중심까지 가지 말고, goal 중심 "앞쪽"에서 멈추게 만들기
-        gx = GOAL_X - math.cos(yaw) * STOP_BEFORE_GOAL
-        gy = GOAL_Y - math.sin(yaw) * STOP_BEFORE_GOAL
-        return gx, gy, yaw
+    def push_goal_from_goal(self, yaw):
+        return (GOAL_X - math.cos(yaw) * STOP_BEFORE_GOAL,
+                GOAL_Y - math.sin(yaw) * STOP_BEFORE_GOAL,
+                yaw)
 
-    # ---------- finish ----------
-    def finish(self, reason: str):
-        self.finished = True
-        self.get_logger().info(f"Bark! Mission 4 complete. ({reason})")
-        raise SystemExit
-
-    # ---------- main ----------
-    def run_once(self):
-        if self.started:
+    # =========================
+    # Thread Logic
+    # =========================
+    def mission_logic(self):
+        time.sleep(1.0)
+        if not self.wait_pose_ready(6.0):
             return
-        self.started = True
-        self.timer.cancel()
 
-        # 후보 3개 순회
         for cand in BOX_CANDIDATES:
-            name = cand["name"]
-            box_x, box_y = cand["box_x"], cand["box_y"]
+            self.get_logger().info(f"=== Candidate: {cand['name']} ===")
 
-            yaw = self.yaw_box_to_goal(box_x, box_y)
-            obs_x, obs_y, obs_yaw = self.obs_pose_from_box(box_x, box_y, yaw)
-            pre_x, pre_y, pre_yaw = self.pre_pose_from_box(box_x, box_y, yaw)
-            push_x, push_y, push_yaw = self.push_goal_from_goal(yaw)
-
-            self.get_logger().info(f"=== Try {name} ===")
-
-            # 1) 관찰 위치 이동
-            self.publish_goal(obs_x, obs_y, obs_yaw)
+            yaw = self.yaw_box_to_goal(cand["box_x"], cand["box_y"])
+            
+            # 1. Observe
+            obs = self.obs_pose_from_box(cand["box_x"], cand["box_y"], yaw)
+            self.publish_goal(*obs)
             if not self.wait_goal_reached(STEP_TIMEOUT):
-                self.get_logger().warn("obs timeout -> next")
-                continue
+                self.get_logger().warn("Failed to reach OBS pose.")
+                continue # 다음 후보로
             time.sleep(SETTLE_TIME)
 
-            # 2) 박스 여부 판단 (label=box + 거리 범위 + 샘플링)
+            # 2. Check Box
             if not self.box_present_check():
-                self.get_logger().info("No box here -> next candidate.")
+                self.get_logger().info("Box not found here.")
                 continue
 
-            self.get_logger().info("Box detected -> go pre-push.")
-
-            # 3) 박스 뒤 정렬 위치로 이동
-            self.publish_goal(pre_x, pre_y, pre_yaw)
+            # 3. Pre-push (Align)
+            pre = self.pre_pose_from_box(cand["box_x"], cand["box_y"], yaw)
+            self.publish_goal(*pre)
             if not self.wait_goal_reached(STEP_TIMEOUT):
-                self.get_logger().warn("pre timeout -> next")
+                self.get_logger().warn("Failed to reach PRE pose.")
                 continue
             time.sleep(SETTLE_TIME)
 
-            # 4) goal 방향으로 밀기 (goal 중심까지 가지 않고 살짝 덜 감)
-            self.publish_goal(push_x, push_y, push_yaw)
+            # 4. Push
+            push = self.push_goal_from_goal(yaw)
+            self.publish_goal(*push)
             if not self.wait_goal_reached(STEP_TIMEOUT):
-                self.get_logger().warn("push timeout -> next")
-                continue
+                 self.get_logger().warn("Failed to reach PUSH goal.")
+                 # 실패했더라도 일단 루프 종료할지, 다음 박스 갈지 결정 필요. 여기선 종료
+                 break
 
-            self.finish(reason=f"{name}: pushed toward fixed goal")
+            self.get_logger().info("MISSION COMPLETE")
+            return
 
-        self.get_logger().error("All candidates tried, failed.")
-        raise SystemExit
+        self.get_logger().error("All candidates failed or done.")
 
 
 def main(args=None):
@@ -238,12 +294,11 @@ def main(args=None):
     node = Mission4Box()
     try:
         rclpy.spin(node)
-    except SystemExit:
+    except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
