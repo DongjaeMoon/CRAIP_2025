@@ -960,7 +960,17 @@ std::vector<double> PathTracker::_GetCost(const std::vector<PathStamp>& ref_in, 
         if (map_const) _cost.const_indices.push_back(k);
 
         auto global_cur_state = cur_state.toGlobalPoint(_state.yaw, _state.toGeoPoint());
-        double heading_cost = _cost.GetHeadingCost(global_cur_state, _global_subgoal, robot_orient.yaw);
+        //double heading_cost = _cost.GetHeadingCost(global_cur_state, _global_subgoal, robot_orient.yaw);
+        double dist_to_subgoal = std::sqrt(std::pow(global_cur_state.x - _global_subgoal.x, 2) + 
+                                   std::pow(global_cur_state.y - _global_subgoal.y, 2));
+                                   
+        double heading_cost = 0.0;
+
+        // 목표점이 0.5m보다 멀 때만 헤딩(방향)을 신경 씀. 
+        // 가까우면(0.5m 이내) 헤딩 무시하고 위치로만 직진!
+        if (dist_to_subgoal > 0.5) {
+            heading_cost = _cost.GetHeadingCost(global_cur_state, _global_subgoal, robot_orient.yaw);
+        }
         double terminal_cost = _cost.GetTerminalCost(cur_state, ref_state);
         double subgoal_cost = _cost.GetSubgoalCost(cur_state, _subgoal);
     

@@ -144,7 +144,7 @@ private:
     double distance = std::sqrt(dx * dx + dy * dy);
     
     // Only replan if position changed significantly (moved to new grid cell)
-    if (distance < 0.5) {  // Threshold for considering position unchanged
+    if (distance < 0.1) {  // Threshold for considering position unchanged
       return;
     }
     
@@ -315,17 +315,7 @@ private:
           pose.pose.orientation.x = 0.0;
           pose.pose.orientation.y = 0.0;
       }
-     /*
-     if (i == path_cells.size() - 1) {
-          // 마지막 점: 사용자가 Rviz에서 지정한 Goal Orientation 적용!
-          pose.pose.orientation = goal_pose_.pose.orientation;
-      } else {
-          // 중간 점: 그냥 0도로 두거나, 다음 점을 바라보게 계산 가능 (여기선 0도로 유지해도 무방)
-          pose.pose.orientation.w = 1.0; 
-          pose.pose.orientation.x = 0.0;
-          pose.pose.orientation.y = 0.0;
-          pose.pose.orientation.z = 0.0;
-      }*/
+     
       
       path_msg.poses.push_back(pose);
     }
