@@ -12,30 +12,30 @@ from std_msgs.msg import String
 from sensor_msgs.msg import LaserScan
 
 # =========================================================
-# 방 20개 "입구/문 앞" 관찰 시작점 (x, y, yaw_in)
-# 주석 지우지 마!
+# 20 room "entrance/door-front" observation start points (x, y, yaw_in)
+# DO NOT DELETE COMMENTS
 # =========================================================
 ROOM_ENTRANCES: List[Tuple[float, float, float]] = [
-    (-3.960, 16.2, 1.592),  # room1 left
-    (-7.392, 12.704, 1.576),  # room2 left
-    (-9.715, 10.548, -3.087),  # room3 left
-    (-9.650, 5.201, 3.031),  # room4 left
-    (-7.736, -9.006, 3.127),  # room5 left
-    (-7.273, -22.891, 3.040),  # room6 left
-    (-7.655, -25.973, -3.033),  # nurse
-    (5.068, -27.260, -1.724),  # room7 r
-    (7.324, -22.737, 0),  # room6 r
-    (2.415, -16.745, -1.956),  # room3 mr
-    (-3.101, -16.583, -0.917),  # room3 ml
-    (2.342, -10.563, -2.256),  # room2 mr
-    (-2.270, -10.874, -1.236),  # room2 ml
-    (7.588, -8.933, 0),  # room5 r
-    (2.244, -0.516, -1.967),  # room1 ml
-    (-2.771, -0.651, -0.736),  # room1 mr
-    (9.452, 4.863, 0.427),  # room4 r
-    (9.377, 11.041, -0.278),  # room3 r
-    (7.111, 13.244, 1.413),  # room2 r
-    (4.921, 15.460, 1.528),  # room1 r
+    (-7.728, -4.406, 1.76),  # room5 left.
+    (-1.507, -2.144, -1.46),  # room1 ml.
+    (1.051, -2.094, -1.551),  # room1 mr.
+    (8.180, -6.583, 1.416),  # room5 r.
+    (-7.788, -18.861, 1.720),  # room6 left.
+    (-8.213, -26.976, -1.600),  # nurse.
+    (5.591, -27.694, -0.002),  # room7 r.
+    (8.100, 14.372, 1.416),  # room2 r.
+    (4.403, 17.164, 1.553),  # room1 r.
+    (-4.552, 16.854, 1.516), # room1 left.
+    (-7.853, 13.862, 1.626),  # room2 left.
+    (-9.767, 10.942, -2.682),  # room3 left.
+    (-9.650, 5.201, 3.031),  # room4 left.
+    (8.116, -19.438, 1.551),  # room6 r.
+    (1.720, -11.124, -1.664),  # room2 mr.
+    (-1.881, -10.948, -1.304),  # room2 ml.
+    (2.284, -17.144, -1.910),  # room3 mr.
+    (-2.465, -16.843, -1.212),  # room3 ml.
+    (10.297, 5.973, -0.100),  # room4 r
+    (10.199, 10.288, -0.036),  # room3 r
 ]
 
 # =========================================================
@@ -48,31 +48,36 @@ TOPIC_LABELS = "/detections/labels"
 TOPIC_SPEECH = "/robot_dog/speech"
 TOPIC_SCAN = "/scan"
 
-STEP_TIMEOUT = 30.0
 SETTLE_TIME = 0.8
 
 GOAL_RADIUS = 0.35
 GOAL_YAW_TOLERANCE = 0.20
 
-INROOM_STEPS = [0.0, 1.0, 1.8]
+INROOM_STEPS = [0.0, 2.0 , 3.0]
 
-# 회전 과하게 안 하게
-SCAN_ANGLE_RANGE = math.radians(130)   # ±35도
-SCAN_STEP_ANGLE = math.radians(6)
+# d-specific step timeouts (seconds)
+# (너 코드에 2.0이 있었는데 실제 스텝은 1.5, 4.5라서 맞춰줌)
+STEP_TIMEOUTS = {
+    1.5: 15.0,
+    2.0: 15.0,
+    3.0: 15.0,
+}
+DEFAULT_STEP_TIMEOUT = 30.0
+
+# 360 scan
 SCAN_WZ = 0.22
-SCAN_TOTAL_TIME = 8.0
+SCAN_TOTAL_TIME = 20
+MIN_HITS = 7
 
-MIN_HITS = 2
-
-APPROACH_TIMEOUT = 30.0
+# 접근 모드에서는 타임아웃을 쓰지 않음 (good이면 bark까지 가야 하니까)
 FORWARD_SPEED = 0.12
 TURN_SPEED = 0.22
 
-TOTAL_FOOD_TO_FINISH = 10
+TOTAL_FOOD_TO_FINISH = 10  # log only
 
-# 빈공간으로 움직이기용
-FRONT_BLOCK_DIST = 0.55   # 앞이 이보다 가까우면 회피
-SIDE_CHECK_DEG = 55       # 좌우 확인 각도
+# wander / obstacle avoidance
+FRONT_BLOCK_DIST = 0.55
+SIDE_CHECK_DEG = 55
 WANDER_TIME_PER_STEP = 4.0
 
 
@@ -124,9 +129,12 @@ class Mission2Food(Node):
         self.speech = "None"
 
         self.scan_msg: Optional[LaserScan] = None
-        self.last_good_yaw: Optional[float] = None  # good를 본 방향(대략)
+        self.last_good_yaw: Optional[float] = None
 
-        self.food_seen = 0
+        self.food_seen = 0  # bad만 세기
+
+        # bark가 예전에 남아있는 값이면 바로 종료되는 걸 막기 위해
+        self.last_bark_time: float = -1.0
 
         threading.Thread(target=self.mission_logic, daemon=True).start()
 
@@ -142,7 +150,10 @@ class Mission2Food(Node):
         self.labels = parse_labels(msg.data)
 
     def speech_cb(self, msg):
-        self.speech = msg.data.strip().lower()
+        s = msg.data.strip().lower()
+        self.speech = s
+        if s == "bark":
+            self.last_bark_time = time.time()
 
     def scan_cb(self, msg: LaserScan):
         self.scan_msg = msg
@@ -178,19 +189,13 @@ class Mission2Food(Node):
         return any("bad" in t for t in self.labels)
 
     # -------------------------
-    # Scan 기반 빈공간 방향 선택
+    # Scan-based free-space motion
     # -------------------------
     def _range_at_angle(self, ang_rad: float) -> float:
-        """
-        로봇 기준 각도(라디안)에서 거리 값을 대략 가져옴
-        scan이 없으면 큰 값 반환
-        """
         msg = self.scan_msg
         if msg is None or len(msg.ranges) == 0:
             return 999.0
 
-        # 각도 -> 인덱스
-        # msg.angle_min + i*inc = ang
         i = int(round((ang_rad - msg.angle_min) / msg.angle_increment))
         i = max(0, min(i, len(msg.ranges) - 1))
 
@@ -200,7 +205,6 @@ class Mission2Food(Node):
         return 999.0
 
     def _front_clear(self) -> float:
-        # 정면 근처 여러 샘플 중 최솟값
         a = math.radians(18)
         vals = [
             self._range_at_angle(0.0),
@@ -218,22 +222,16 @@ class Mission2Food(Node):
         return self._range_at_angle(-ang)
 
     def _avoidance_twist(self, forward_speed: float) -> Twist:
-        """
-        앞이 막히면 더 넓은 쪽으로 돌고,
-        앞이 비면 전진(약간의 보정)
-        """
         tw = Twist()
         front = self._front_clear()
         left = self._left_clear()
         right = self._right_clear()
 
         if front < FRONT_BLOCK_DIST:
-            # 더 넓은 쪽으로 회전
             tw.linear.x = 0.0
             tw.angular.z = +TURN_SPEED if left > right else -TURN_SPEED
             return tw
 
-        # 앞이 비면 전진, 양쪽 차이가 크면 약간 틀기
         tw.linear.x = forward_speed
         bias = max(-0.25, min(0.25, (left - right) * 0.15))
         tw.angular.z = bias
@@ -243,18 +241,27 @@ class Mission2Food(Node):
     # Core behaviors
     # -------------------------
     def look_around(self):
-        start_yaw = self.cur_yaw
-        target = start_yaw
-        direction = 1
+        """
+        Rotate in place for ~360 degrees (one full spin).
+        Return: "good" / "bad" / "none"
+        """
+        if self.cur_yaw is None:
+            return "none"
+
+        turned = 0.0
+        last_yaw = self.cur_yaw
         t0 = time.time()
 
         good_hits = 0
         bad_hits = 0
 
-        while time.time() - t0 < SCAN_TOTAL_TIME:
+        tw = Twist()
+        tw.angular.z = +SCAN_WZ
+
+        while rclpy.ok():
             if self.has_good():
                 good_hits += 1
-                self.last_good_yaw = self.cur_yaw  # good를 본 대략 방향 저장
+                self.last_good_yaw = self.cur_yaw
             else:
                 good_hits = 0
 
@@ -270,13 +277,16 @@ class Mission2Food(Node):
                 self.cmd_pub.publish(Twist())
                 return "bad"
 
-            target = normalize_angle(target + direction * SCAN_STEP_ANGLE)
-            if abs(normalize_angle(target - start_yaw)) > SCAN_ANGLE_RANGE:
-                direction *= -1
+            cur = self.cur_yaw
+            d = normalize_angle(cur - last_yaw)
+            turned += abs(d)
+            last_yaw = cur
 
-            err = normalize_angle(target - self.cur_yaw)
-            tw = Twist()
-            tw.angular.z = max(-SCAN_WZ, min(SCAN_WZ, 1.0 * err))
+            if turned >= 2.0 * math.pi:
+                break
+            if time.time() - t0 > SCAN_TOTAL_TIME:
+                break
+
             self.cmd_pub.publish(tw)
             time.sleep(0.05)
 
@@ -285,16 +295,29 @@ class Mission2Food(Node):
 
     def wander_with_space(self, duration_s: float) -> str:
         """
-        빈공간으로 조금 돌아다니며 탐색
-        good/bad가 보이면 즉시 반환
+        기존 코드는 good 1번만 떠도 바로 리턴이라 너무 약함.
+        여기서는 MIN_HITS 연속으로 들어와야 good, bad 판정.
         """
         t0 = time.time()
+        good_hits = 0
+        bad_hits = 0
+
         while time.time() - t0 < duration_s and rclpy.ok():
             if self.has_good():
+                good_hits += 1
                 self.last_good_yaw = self.cur_yaw
+            else:
+                good_hits = 0
+
+            if self.has_bad():
+                bad_hits += 1
+            else:
+                bad_hits = 0
+
+            if good_hits >= MIN_HITS:
                 self.cmd_pub.publish(Twist())
                 return "good"
-            if self.has_bad():
+            if bad_hits >= MIN_HITS:
                 self.cmd_pub.publish(Twist())
                 return "bad"
 
@@ -320,44 +343,54 @@ class Mission2Food(Node):
             time.sleep(0.05)
         self.cmd_pub.publish(Twist())
 
-    def approach_until_bark(self):
+    def approach_until_bark(self) -> bool:
         """
-        good이면 그쪽으로 가서 bark
-        - good를 멀리서라도 봤으면(last_good_yaw) 그쪽으로 먼저 틀고 접근
-        - 앞이 막히면 빈공간으로 회피하며 접근
-        - bad 나오면 바로 중단
+        규칙:
+        - 이 함수가 호출된 순간은 good이 '확실'하게 잡힌 순간
+        - 그 다음은 bark가 실제로 찍힐 때까지 절대 종료하지 않음
+        - bad가 중간에 떠도 무시 (이미 good 확정이므로)
+        - bark도 '접근 시작 이후'의 bark만 인정 (예전 bark 잔상 방지)
         """
-        # good를 본 방향이 있으면 우선 그쪽으로 살짝 맞추기
+        start_t = time.time()
         if self.last_good_yaw is not None:
             self._turn_toward(self.last_good_yaw, max_time=2.0)
 
-        t0 = time.time()
-        while time.time() - t0 < APPROACH_TIMEOUT and rclpy.ok():
-            if self.speech == "bark":
+        lost_t0 = None
+
+        while rclpy.ok():
+            # bark는 접근 시작 이후에 찍힌 것만 인정
+            if self.last_bark_time > start_t:
                 self.cmd_pub.publish(Twist())
                 return True
-            if self.has_bad():
-                self.cmd_pub.publish(Twist())
-                return False
 
-            # good 보이면 전진 위주, 안 보이면 last_good_yaw 쪽으로 천천히 돌면서 찾기
+            # good 계속 보이면 전진 우선
             if self.has_good():
                 self.last_good_yaw = self.cur_yaw
+                lost_t0 = None
                 tw = self._avoidance_twist(FORWARD_SPEED)
                 self.cmd_pub.publish(tw)
-            else:
-                tw = Twist()
-                # 앞이 너무 막히면 회피 우선
-                if self._front_clear() < FRONT_BLOCK_DIST:
-                    tw = self._avoidance_twist(0.0)
-                else:
-                    if self.last_good_yaw is not None:
-                        err = normalize_angle(self.last_good_yaw - self.cur_yaw)
-                        tw.angular.z = max(-TURN_SPEED, min(TURN_SPEED, 1.0 * err))
-                    else:
-                        tw.angular.z = TURN_SPEED
-                self.cmd_pub.publish(tw)
+                time.sleep(0.1)
+                continue
 
+            # good을 잠깐 놓친 경우: 마지막 방향으로 돌거나, 제자리 탐색 회전
+            if lost_t0 is None:
+                lost_t0 = time.time()
+            dt = time.time() - lost_t0
+
+            if self._front_clear() < FRONT_BLOCK_DIST:
+                tw = self._avoidance_twist(0.0)
+                self.cmd_pub.publish(tw)
+                time.sleep(0.1)
+                continue
+
+            tw = Twist()
+            if dt < 2.0 and self.last_good_yaw is not None and self.cur_yaw is not None:
+                err = normalize_angle(self.last_good_yaw - self.cur_yaw)
+                tw.angular.z = max(-TURN_SPEED, min(TURN_SPEED, 1.0 * err))
+            else:
+                tw.angular.z = TURN_SPEED
+
+            self.cmd_pub.publish(tw)
             time.sleep(0.1)
 
         self.cmd_pub.publish(Twist())
@@ -370,74 +403,95 @@ class Mission2Food(Node):
         time.sleep(1.0)
 
         for idx, (ex, ey, yaw) in enumerate(ROOM_ENTRANCES, 1):
-            if self.food_seen >= TOTAL_FOOD_TO_FINISH:
-                self.get_logger().info("MISSION COMPLETE: found 10 foods")
-                return
-
-            # 1) 입구는 제한 없이 도달할 때까지
+            # 1) Go to entrance
             self.publish_goal(ex, ey, yaw)
             self.wait_reached(ex, ey, yaw, timeout_s=None)
             time.sleep(SETTLE_TIME)
 
-            room_done = False
-
-            # 2) 입구에서 먼저 스캔
+            # 2) 360 scan at entrance
             res0 = self.look_around()
+
             if res0 == "bad":
                 self.food_seen += 1
-                self.get_logger().info(f"Food found (bad) total={self.food_seen} -> next room")
-                continue
-            if res0 == "good":
-                self.food_seen += 1
-                self.get_logger().info(f"Food found (good) total={self.food_seen} -> approach+bark")
-                self.approach_until_bark()
+                self.get_logger().info(
+                    f"[room {idx}] BAD found at entrance total_bad={self.food_seen} -> next room"
+                )
                 continue
 
-            # 3) 안 보이면 inroom step + 빈공간으로 조금 돌아다니기
+            if res0 == "good":
+                self.get_logger().info(
+                    f"[room {idx}] GOOD found at entrance -> MUST bark before end"
+                )
+                self.approach_until_bark()
+                self.cmd_pub.publish(Twist())
+                self.get_logger().info("BARK confirmed -> MISSION END")
+                return
+
+            # 3) In-room steps + wander
+            goto_next_room = False
+
             for d in INROOM_STEPS:
                 px = ex + math.cos(yaw) * d
                 py = ey + math.sin(yaw) * d
 
                 self.publish_goal(px, py, yaw)
 
-                # 전진(d>0)만 시간 제한, 막히면 다음 방
+                # d=0 : no timeout; d>0 : timeout; if timeout -> give up this room
                 if d > 0.0:
-                    if not self.wait_reached(px, py, yaw, timeout_s=STEP_TIMEOUT):
-                        self.get_logger().warn(f"Inroom reach timeout: room idx={idx}, d={d} -> next room")
-                        room_done = True
+                    timeout = STEP_TIMEOUTS.get(float(d), DEFAULT_STEP_TIMEOUT)
+                    if not self.wait_reached(px, py, yaw, timeout_s=timeout):
+                        self.get_logger().warn(
+                            f"[room {idx}] Inroom reach timeout d={d} timeout={timeout}s -> GIVE UP ROOM"
+                        )
+                        goto_next_room = True
                         break
                     time.sleep(SETTLE_TIME)
 
-                # 그 지점에서 스캔
+                # 360 scan
                 res = self.look_around()
+
                 if res == "bad":
                     self.food_seen += 1
-                    self.get_logger().info(f"Food found (bad) total={self.food_seen} -> next room")
-                    room_done = True
-                    break
-                if res == "good":
-                    self.food_seen += 1
-                    self.get_logger().info(f"Food found (good) total={self.food_seen} -> approach+bark")
-                    self.approach_until_bark()
-                    room_done = True
+                    self.get_logger().info(
+                        f"[room {idx}] BAD found in scan total_bad={self.food_seen} -> next room"
+                    )
+                    goto_next_room = True
                     break
 
-                # 스캔에도 없으면, 빈공간으로 잠깐 돌아다니며 찾기
+                if res == "good":
+                    self.get_logger().info(
+                        f"[room {idx}] GOOD found in scan -> MUST bark before end"
+                    )
+                    self.approach_until_bark()
+                    self.cmd_pub.publish(Twist())
+                    self.get_logger().info("BARK confirmed -> MISSION END")
+                    return
+
+                # wander
                 resw = self.wander_with_space(WANDER_TIME_PER_STEP)
+
                 if resw == "bad":
                     self.food_seen += 1
-                    self.get_logger().info(f"Food found (bad) total={self.food_seen} -> next room")
-                    room_done = True
-                    break
-                if resw == "good":
-                    self.food_seen += 1
-                    self.get_logger().info(f"Food found (good) total={self.food_seen} -> approach+bark")
-                    self.approach_until_bark()
-                    room_done = True
+                    self.get_logger().info(
+                        f"[room {idx}] BAD found while wandering total_bad={self.food_seen} -> next room"
+                    )
+                    goto_next_room = True
                     break
 
-            if room_done:
+                if resw == "good":
+                    self.get_logger().info(
+                        f"[room {idx}] GOOD found while wandering -> MUST bark before end"
+                    )
+                    self.approach_until_bark()
+                    self.cmd_pub.publish(Twist())
+                    self.get_logger().info("BARK confirmed -> MISSION END")
+                    return
+
+            if goto_next_room:
                 continue
+
+        self.get_logger().info("MISSION END: scanned all rooms, no GOOD found")
+        self.cmd_pub.publish(Twist())
 
     def publish_goal(self, x, y, yaw):
         g = PoseStamped()

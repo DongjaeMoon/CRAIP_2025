@@ -22,9 +22,9 @@ def generate_launch_description():
             package='language_command_handler',
             
             # [수정] 실행할 파일 이름을 새로 만든 'Pivot' 스크립트로 변경
-            #executable='mission3_cone.py',  
+            executable='mission3_cone.py',  
             #executable='mission3_cone_pivot.py',  
-            executable='mission3_cone_diagonal.py',  
+            #executable='mission3_cone_diagonal.py',  
             
             name='mission3_cone_pivot_node',
             output='screen',

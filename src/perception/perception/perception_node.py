@@ -54,6 +54,8 @@ class PerceptionNode(Node):
         self.pub_distances  = self.create_publisher(Float32MultiArray, '/detections/distances', 10)   # all
         self.pub_dist_near  = self.create_publisher(Float32, '/detections/distance', 10)              # nearest 1
         self.pub_speech     = self.create_publisher(String, '/robot_dog/speech', 10)
+        # [NEW] 중심점 좌표(cx) 발행 추가
+        self.pub_centers    = self.create_publisher(Float32MultiArray, '/detections/centers', 10)
 
         # =========================
         # Subscribers
@@ -80,6 +82,7 @@ class PerceptionNode(Node):
         self.get_logger().info("Perception Node Started.")
 
     def listener_callback(self, rgb_msg, depth_msg):
+        centers_all = []
         try:
             frame = self.br.imgmsg_to_cv2(rgb_msg, "bgr8")
             # depth 인코딩이 32FC1이 아닐 수도 있어서 passthrough로 받고, 아래에서 처리
@@ -142,7 +145,7 @@ class PerceptionNode(Node):
                 # collect candidates (타겟 + 음식)
                 if (label in self.TARGET_LABELS) or (label in self.FOOD_LABELS):
                     sort_dist = dist if dist > 0.0 else float("inf")
-                    candidates.append((sort_dist, label, float(dist), cx))
+                    candidates.append((sort_dist, label, float(dist), float(cx)))
 
                 # bark condition (음식만)
                 if label in self.FOOD_LABELS and is_edible:
@@ -159,10 +162,13 @@ class PerceptionNode(Node):
         if candidates:
             labels_csv = ",".join([c[1] for c in candidates])
             dists_all = [float(c[2]) for c in candidates]
+            # [NEW] cx 좌표 리스트 추출
+            centers_all = [float(c[3]) for c in candidates]
             nearest_dist = float(candidates[0][2])
         else:
             labels_csv = "None"
             dists_all = []
+            centers_all = []
             nearest_dist = 0.0
 
         # publish image
@@ -177,6 +183,11 @@ class PerceptionNode(Node):
         m_dists = Float32MultiArray()
         m_dists.data = dists_all
         self.pub_distances.publish(m_dists)
+
+        # [NEW] publish centers array
+        m_centers = Float32MultiArray()
+        m_centers.data = centers_all
+        self.pub_centers.publish(m_centers)
 
         # publish nearest float (호환용)
         m_near = Float32()

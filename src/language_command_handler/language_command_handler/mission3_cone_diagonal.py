@@ -26,7 +26,7 @@ CONE_LOCATIONS = [
 # [설정 3] 접근 파라미터
 # =========================================================
 NAV_STOP_OFFSET = 0.5
-APPROACH_DRIVE_DIST = 1.15
+APPROACH_DRIVE_DIST = 0.2
 FORWARD_SPEED = 0.2
 
 # Perception Topics
@@ -188,7 +188,7 @@ class Mission3ConeDiagonal(Node):
                 goal_x = target_loc['x']
                 goal_y = target_loc['y'] - NAV_STOP_OFFSET
                 self.get_logger().info(f"Navigating to Pre-Action Pose: ({goal_x}, {goal_y})")
-                self.send_goal(goal_x, goal_y, 1.5)
+                self.send_goal(goal_x, goal_y, 1.55)
                 self.waiting_for_arrival = True
 
         # [Step 4] 맹목적 전진 -> 끝나면 즉시 bark 시작
@@ -253,3 +253,198 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+'''#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import PoseStamped, Twist
+from std_msgs.msg import String, Bool, Float32MultiArray
+import math
+import time
+
+# =========================================================
+# [설정] 파라미터
+# =========================================================
+OBS_X = 1.25
+OBS_Y = 13.5
+OBS_YAW = 1.57
+
+# 콘들의 실제 맵 좌표 (고정값)
+CONE_COORDS = [
+    {'x': 0.1,  'y': 15.25},  # [0] Left
+    {'x': 1.25, 'y': 15.25},  # [1] Center
+    {'x': 2.5,  'y': 15.25}   # [2] Right
+]
+
+# 접근 설정
+STOP_DIST = 0.5       # 콘 앞 0.5m 에서 정지
+FORWARD_SPEED = 0.2   # 전진 속도 (m/s)
+
+IMG_WIDTH = 640
+FOV_DEG = 80.0        
+FOCAL_LENGTH = (IMG_WIDTH / 2) / math.tan(math.radians(FOV_DEG / 2))
+# =========================================================
+
+class Mission3ConeDiagonal(Node):
+    def __init__(self):
+        super().__init__('mission3_cone_diagonal')
+
+        self.declare_parameter('target_color', 'red')
+        self.target_color = self.get_parameter('target_color').get_parameter_value().string_value.lower()
+        self.get_logger().info(f">>> [Align & Blind] Target: {self.target_color.upper()}")
+
+        # Publishers
+        self.goal_pub   = self.create_publisher(PoseStamped, '/goal_pose', 10)
+        self.bark_pub   = self.create_publisher(String, '/bark', 10)
+        self.speech_pub = self.create_publisher(String, '/robot_dog/speech', 10)
+        self.cmd_pub    = self.create_publisher(Twist, '/cmd_vel', 10)
+
+        # Subscribers
+        self.goal_reached_sub = self.create_subscription(Bool, '/goal_reached', self.goal_reached_cb, 10)
+        self.labels_sub = self.create_subscription(String, '/detections/labels', self.labels_cb, 10)
+        self.centers_sub = self.create_subscription(Float32MultiArray, '/detections/centers', self.centers_cb, 10)
+        self.dists_sub = self.create_subscription(Float32MultiArray, '/detections/distances', self.dists_cb, 10)
+
+        # Variables
+        self.state = "INIT" 
+        self.arrival_wait = False
+        
+        self.found_target = False
+        self.target_cx = -1.0
+        self.target_idx = -1
+        
+        # Blind Approach Variables
+        self.approach_start_time = 0.0
+        self.approach_duration = 0.0
+        
+        self.timer = self.create_timer(0.1, self.control_loop)
+
+    def goal_reached_cb(self, msg: Bool):
+        if msg.data and self.arrival_wait:
+            self.arrival_wait = False
+
+    def labels_cb(self, msg: String):
+        labels = [l.strip() for l in msg.data.split(',')]
+        found = False
+        for i, lbl in enumerate(labels):
+            if self.target_color in lbl and "cone" in lbl:
+                self.target_idx = i
+                self.found_target = True
+                found = True
+                break
+        if not found:
+            self.found_target = False
+            self.target_idx = -1
+
+    def centers_cb(self, msg: Float32MultiArray):
+        if self.found_target and 0 <= self.target_idx < len(msg.data):
+            self.target_cx = msg.data[self.target_idx]
+
+    def dists_cb(self, msg: Float32MultiArray):
+        # 이번 로직에선 perception 거리는 참고만 하거나 안 씀
+        pass
+
+    def get_angle_error(self):
+        pixel_error = (IMG_WIDTH / 2) - self.target_cx
+        angle = math.atan2(pixel_error, FOCAL_LENGTH)
+        return angle
+
+    def send_goal(self, x, y, yaw):
+        goal = PoseStamped()
+        goal.header.frame_id = "map"
+        goal.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.position.x = float(x); goal.pose.position.y = float(y)
+        goal.pose.orientation.z = math.sin(yaw/2.0); goal.pose.orientation.w = math.cos(yaw/2.0)
+        self.goal_pub.publish(goal)
+
+    def stop_robot(self):
+        self.cmd_pub.publish(Twist())
+
+    # -------------------------
+    # Main Loop
+    # -------------------------
+    def control_loop(self):
+        cmd = Twist()
+
+        # [1] 이동
+        if self.state == "INIT":
+            self.get_logger().info(f"Moving to Obs Spot ({OBS_X}, {OBS_Y})...")
+            self.send_goal(OBS_X, OBS_Y, OBS_YAW)
+            self.state = "SCAN"
+            self.arrival_wait = True
+
+        # [2] 스캔
+        elif self.state == "SCAN":
+            if not self.arrival_wait:
+                if self.found_target and self.target_cx > 0:
+                    self.stop_robot()
+                    self.get_logger().info(f">>> Found {self.target_color}! Aligning...")
+                    self.state = "ALIGN"
+                else:
+                    cmd.angular.z = 0.3
+                    self.cmd_pub.publish(cmd)
+
+        # [3] 정밀 정렬 (Perfect Align)
+        elif self.state == "ALIGN":
+            if not self.found_target:
+                self.state = "SCAN"
+                return
+
+            angle_err = self.get_angle_error()
+            
+            if abs(angle_err) < 0.035: # 2도 이내 정렬
+                self.stop_robot()
+                self.get_logger().info(">>> Aligned! Calculating Blind Distance...")
+                
+                # [수정] 정렬 직후, Perception 거리 대신 '하드코딩된 거리' 계산
+                # 현재 로봇은 OBS_Y(14.5)에 있고, 콘은 Y=15.25에 있음.
+                # X축 정렬은 맞췄다고 가정.
+                # 남은 거리 = (콘 Y) - (현재 Y) - (멈출 거리)
+                # 근데 로봇 위치가 정확하지 않을 수 있으니, 그냥 안전하게 0.5m 전진하거나
+                # 혹은 Perception 거리의 '마지막 값'을 스냅샷 떠서 쓸 수도 있음.
+                
+                # 여기서는 사용자 요청대로 '하드코딩 식' 접근 (시간 기반)
+                # OBS_Y(14.5) -> CONE_Y(15.25) : 차이는 0.75m
+                # 거기서 STOP_DIST(0.5m)를 빼면 0.25m 정도만 더 가면 됨.
+                # 하지만 로봇 팔 길이 등 고려해서 0.4m 정도 전진하도록 설정.
+                
+                move_dist = 1.5  # [하드코딩] 40cm 전진
+                
+                self.approach_duration = move_dist / FORWARD_SPEED
+                self.approach_start_time = time.time()
+                self.state = "BLIND_MOVE"
+                
+            else:
+                cmd.angular.z = 1.5 * angle_err
+                cmd.angular.z = max(min(cmd.angular.z, 0.5), -0.5)
+                self.cmd_pub.publish(cmd)
+
+        # [4] [수정] 맹목적 전진 (Blind Move)
+        elif self.state == "BLIND_MOVE":
+            elapsed = time.time() - self.approach_start_time
+            
+            if elapsed < self.approach_duration:
+                # Perception 무시하고 그냥 앞으로 감
+                cmd.linear.x = FORWARD_SPEED
+                # 직진성 유지 (회전 없음)
+                cmd.angular.z = 0.0 
+                self.cmd_pub.publish(cmd)
+            else:
+                self.stop_robot()
+                self.get_logger().info(">>> Blind Move Done. Barking!")
+                self.state = "BARK"
+
+        # [5] 짖기
+        elif self.state == "BARK":
+            msg = String(); msg.data = "bark"
+            self.bark_pub.publish(msg)
+            self.speech_pub.publish(msg)
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = Mission3ConeDiagonal()
+    try: rclpy.spin(node)
+    except: pass
+    finally: node.destroy_node(); rclpy.shutdown()
+
+if __name__ == '__main__': main()'''

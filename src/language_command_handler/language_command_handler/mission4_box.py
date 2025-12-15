@@ -3,9 +3,14 @@ import math
 import time
 import threading
 from typing import Optional, Dict, List
+import sys
 
 import rclpy
 from rclpy.node import Node
+
+# [중요] Twist 메시지 필요
+from geometry_msgs.msg import PoseStamped, Twist
+from std_msgs.msg import String, Float32MultiArray
 
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String, Float32MultiArray
@@ -15,15 +20,15 @@ from std_msgs.msg import String, Float32MultiArray
 # =========================
 GOAL_X = 0.0
 GOAL_Y = 12.0
-STOP_BEFORE_GOAL = 0.3
+STOP_BEFORE_GOAL = 0.42
 
 # =========================
 # BOX CANDIDATES
 # =========================
 BOX_CANDIDATES: List[Dict[str, float]] = [
-    {"name": "cand2", "box_x": 2.0, "box_y": 12.0},
-    {"name": "cand1", "box_x": 0.0, "box_y": 14.0},
-    {"name": "cand3", "box_x": -2.0, "box_y": 12.0},
+    {"name": "cand2", "box_x": 2.75, "box_y": 12.2},
+    {"name": "cand1", "box_x": 0.0, "box_y": 13.0},
+    {"name": "cand3", "box_x": -2.75, "box_y": 12.2},
 ]
 
 # =========================
@@ -44,7 +49,7 @@ MIN_HITS = 2
 # =========================
 # Navigation Constants
 # =========================
-STEP_TIMEOUT = 40.0
+STEP_TIMEOUT = 60.0
 SETTLE_TIME = 0.7
 
 # [수정] 도달 판정 기준 강화
@@ -54,7 +59,7 @@ GOAL_YAW_TOLERANCE = 0.15  # 약 8.5도 오차 허용 (rad)
 # =========================
 # Geometry
 # =========================
-OBS_OFFSET = 1.9
+OBS_OFFSET = 1.75
 PRE_OFFSET = 0.75
 
 TOPIC_LOCAL_POSE = "/go1_pose"
@@ -84,6 +89,9 @@ class Mission4Box(Node):
         super().__init__("mission4_box")
 
         self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+
+        # [수정 1] 로봇 정지용 cmd_vel 퍼블리셔 추가
+        self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
 
         self.pose_sub = self.create_subscription(PoseStamped, TOPIC_LOCAL_POSE, self.pose_cb, 10)
         self.labels_sub = self.create_subscription(String, TOPIC_LABELS, self.labels_cb, 10)
@@ -192,6 +200,11 @@ class Mission4Box(Node):
                 return False
             time.sleep(0.05)
         return False
+    
+    # [수정 2] 로봇 정지 함수 추가
+    def stop_robot(self):
+        cmd = Twist()
+        self.cmd_pub.publish(cmd)
 
     # =========================
     # Perception
@@ -247,6 +260,9 @@ class Mission4Box(Node):
     def mission_logic(self):
         time.sleep(1.0)
         if not self.wait_pose_ready(6.0):
+            # [수정] 실패 시에도 종료 처리
+            rclpy.shutdown()
+            sys.exit(1)
             return
 
         for cand in BOX_CANDIDATES:
@@ -284,9 +300,20 @@ class Mission4Box(Node):
                  break
 
             self.get_logger().info("MISSION COMPLETE")
+            # ▼▼▼ [수정 2-2] 성공 시 종료 코드 추가 ▼▼▼
+            self.stop_robot()  # 안전하게 정지
+            time.sleep(1.0)    # 로그 출력 대기
+            rclpy.shutdown()   # ROS2 시스템 종료 (spin을 멈춤)
+            sys.exit(0)        # 프로세스 종료
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
             return
 
         self.get_logger().error("All candidates failed or done.")
+        # ▼▼▼ [수정 2-3] 실패 시 종료 코드 추가 ▼▼▼
+        self.stop_robot()
+        rclpy.shutdown()
+        sys.exit(1)
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
 
 def main(args=None):
@@ -294,11 +321,17 @@ def main(args=None):
     node = Mission4Box()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C나 sys.exit() 호출 시 조용히 종료
+        pass
+    except Exception as e:
+        # rclpy.shutdown()이 호출되면 여기서 ExternalShutdownException 등이 잡힘
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # rclpy가 아직 살아있다면 종료 (중복 호출 방지)
+        if rclpy.ok():
+            rclpy.shutdown()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
