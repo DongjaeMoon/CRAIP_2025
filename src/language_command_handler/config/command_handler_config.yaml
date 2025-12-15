@@ -13,6 +13,7 @@ prompt: |
   # - mission3_green.launch.py: Find and go to the GREEN cone.
   # - mission4.launch.py : Find box and move the box to the zone by pushing it.
   # - mission5.launch.py: Move to the empty room without a stop sign.
+  # - mission6.launch.py : Find the nurse and move around the nurse. 
   
   # - stop.py: Stop the robot immediately.
   # - go_front.py: Move forward.

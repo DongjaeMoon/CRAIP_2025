@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 
@@ -30,17 +31,11 @@ class PerceptionNode(Node):
     def __init__(self):
         super().__init__('perception_node')
 
-#<<<<<<< HEAD
         # =========================
         # Model
         # =========================
         pkg_dir = get_package_share_directory('perception')
         model_path = os.path.join(pkg_dir, 'weights', 'best(1).pt')
-#=======
-        # 1. 모델 경로 설정
-        #package_share_directory = get_package_share_directory('perception')
-        #model_path = os.path.join(package_share_directory, 'weights', 'best(1).pt')
-#>>>>>>> 7fe2549117a60b899f3d15f6f6c1db62e447dc67
 
         self.get_logger().info(f'Loading YOLO model from: {model_path}')
         try:
@@ -51,14 +46,13 @@ class PerceptionNode(Node):
 
         self.get_logger().info(f"Model classes: {self.model.names}")
 
-#<<<<<<< HEAD
         # =========================
         # Publishers
         # =========================
         self.pub_image      = self.create_publisher(Image,  '/camera/detections/image', 10)
-        self.pub_labels     = self.create_publisher(String, '/detections/labels', 10)        # csv
-        self.pub_distances  = self.create_publisher(Float32MultiArray, '/detections/distances', 10)  # all
-        self.pub_dist_near  = self.create_publisher(Float32, '/detections/distance', 10)     # nearest 1
+        self.pub_labels     = self.create_publisher(String, '/detections/labels', 10)                 # csv
+        self.pub_distances  = self.create_publisher(Float32MultiArray, '/detections/distances', 10)   # all
+        self.pub_dist_near  = self.create_publisher(Float32, '/detections/distance', 10)              # nearest 1
         self.pub_speech     = self.create_publisher(String, '/robot_dog/speech', 10)
 
         # =========================
@@ -71,40 +65,29 @@ class PerceptionNode(Node):
         ts = message_filters.ApproximateTimeSynchronizer(
             [rgb_sub, depth_sub], queue_size=10, slop=0.1
         )
-#=======
-        # 3. Subscribers
-        #self.br = CvBridge()
-        
-        #rgb_sub = message_filters.Subscriber(self, Image, '/camera_top/image')
-        #depth_sub = message_filters.Subscriber(self, Image, '/camera_top/depth')
-
-#        ts = message_filters.ApproximateTimeSynchronizer([rgb_sub, depth_sub], 10, 0.1)
-#>>>>>>> 7fe2549117a60b899f3d15f6f6c1db62e447dc67
         ts.registerCallback(self.listener_callback)
 
         # =========================
         # Labels to export
         # =========================
-        self.TARGET_LABELS = {"box", "sign", "nurse","red_cone","green_cone","blue_cone"}
-        self.FOOD_LABELS   = {"good_pizza", "bad_pizza"}
+        self.TARGET_LABELS = {"box", "sign", "nurse", "red_cone", "green_cone", "blue_cone"}
+        self.FOOD_LABELS   = {
+            "good_pizza", "bad_pizza",
+            "good_banana", "bad_banana",
+            "good_apple", "bad_apple",
+        }
 
         self.get_logger().info("Perception Node Started.")
 
     def listener_callback(self, rgb_msg, depth_msg):
         try:
             frame = self.br.imgmsg_to_cv2(rgb_msg, "bgr8")
-#<<<<<<< HEAD
-
             # depth 인코딩이 32FC1이 아닐 수도 있어서 passthrough로 받고, 아래에서 처리
             depth = self.br.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
-#=======
-            #depth_frame = self.br.imgmsg_to_cv2(depth_msg, "32FC1")
-#>>>>>>> 7fe2549117a60b899f3d15f6f6c1db62e447dc67
         except Exception as e:
             self.get_logger().error(f"CV bridge error: {e}")
             return
 
-#<<<<<<< HEAD
         h, w, _ = frame.shape
         results = self.model(frame, verbose=False)
 
@@ -117,7 +100,7 @@ class PerceptionNode(Node):
                 cls = int(box.cls[0])
                 label = self.model.names[cls]
 
-                # (optional) 이름 바꿔치기 유지
+                # (optional) 피자만 이름 바꿔치기 유지 (필요 없으면 삭제 가능)
                 if label == "bad_pizza":
                     label = "good_pizza"
                 elif label == "good_pizza":
@@ -137,11 +120,9 @@ class PerceptionNode(Node):
                 # - float 계열이면 보통 meter(32FC1)
                 # - uint16이면 보통 mm(16UC1)
                 if depth.dtype == np.uint16:
-                    # mm -> m, ROI median
                     dist_mm = robust_depth_m(depth.astype(np.float32), cx, cy, r=3)
                     dist = float(dist_mm) / 1000.0
                 else:
-                    # float meter, ROI median
                     dist = robust_depth_m(depth.astype(np.float32), cx, cy, r=3)
 
                 if dist <= 0.0 or (not np.isfinite(dist)):
@@ -151,11 +132,11 @@ class PerceptionNode(Node):
                     dist_str = f"{dist:.2f}m"
 
                 # visualize
-                is_edible = ("good" in label)
+                is_edible = ("good" in label.lower())
                 color = (0, 255, 0) if is_edible else (0, 0, 255)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
                 cv2.putText(frame, f"{label} {dist_str}",
-                            (x1, y1 - 10),
+                            (x1, max(y1 - 10, 0)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
                 # collect candidates (타겟 + 음식)
@@ -164,14 +145,13 @@ class PerceptionNode(Node):
                     candidates.append((sort_dist, label, float(dist), cx))
 
                 # bark condition (음식만)
-
-                if is_edible:
-                    is_close = (0.1 < dist <= 3.0)
+                if label in self.FOOD_LABELS and is_edible:
+                    # 3m 이내 + 가운데 3/5 (좌/우 1/5 제외)
+                    is_close = (0.0 < dist <= 3.0)
                     is_centered = (w * 0.2) < cx < (w * 0.8)
                     if is_close and is_centered:
                         speech_cmd = "bark"
 
-#<<<<<<< HEAD
         # sort by distance
         candidates.sort(key=lambda x: x[0])
 

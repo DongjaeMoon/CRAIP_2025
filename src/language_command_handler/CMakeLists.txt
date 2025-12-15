@@ -31,6 +31,8 @@ install(
     language_command_handler/mission1_toilet.py
     language_command_handler/mission2_food.py
     language_command_handler/mission3_cone.py
+    language_command_handler/mission3_cone_pivot.py
+    language_command_handler/mission3_cone_diagonal.py
     language_command_handler/mission4_box.py
     language_command_handler/mission5_sign.py
     language_command_handler/mission6_nurse.py
