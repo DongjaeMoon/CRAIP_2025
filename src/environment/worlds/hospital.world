@@ -76,47 +76,29 @@
       </include>
     </model>
 
-    <model name="red_cone_1">
+    <model name="green_cone_1">
       <include>
-        <uri>model://red_cone</uri>
+        <uri>model://green_cone</uri>
         <static>true</static>
         <pose>1.2 16.5 0 0 0 0</pose>
       </include>
     </model>
 
-    <model name="green_cone_1">
+    <model name="red_cone_1">
       <include>
-        <uri>model://green_cone</uri>
+        <uri>model://red_cone</uri>
         <static>true</static>
         <pose>2.2 16.5 0 0 0 0</pose>
       </include>
     </model>
 
     <!-- MISSION 4 -->
-
-    <!-- <model name="danger_sign_1">
-      <include>
-        <uri>model://danger_sign</uri>
-        <static>true</static>
-        <pose>1.0 12.0 0 0 0 0</pose>
-      </include>
-    </model> -->
-
-    <model name="circle_sign_1">
-      <include>
-        <uri>model://circle_sign</uri>
-        <static>true</static>
-        <pose>7.5 11.5 0 0 0 2.5</pose>
-      </include>
-    </model>
-
-    <!-- MISSION 5 -->
   
     <model name="box_1">
       <include>
         <uri>model://box</uri>
         <static>false</static>
-        <pose>2 12.0 0.5 0 0 0</pose>
+        <pose>-2 12.0 0.5 0 0 0</pose>
       </include>
     </model>
 
@@ -143,23 +125,49 @@
         </collision> -->
       </link>
       <pose>0 12 -0.499 0 0 0</pose>
+    </model>    
+
+    <!-- MISSION 5 -->
+
+    <!-- <model name="danger_sign_1">
+      <include>
+        <uri>model://danger_sign</uri>
+        <static>true</static>
+        <pose>1.0 12.0 0 0 0 0</pose>
+      </include>
+    </model> -->
+
+    <model name="circle_sign_1">
+      <include>
+        <uri>model://circle_sign</uri>
+        <static>true</static>
+        <pose>6.0 11.7 0 0 0 3.14159</pose>
+      </include>
+    </model>
+
+    <!-- MISSION 6 -->
+    <model name="Scrubs_2">
+      <include>
+        <uri>model://Scrubs</uri>
+        <static>true</static>
+        <pose>-9.0 -26.5 0.0 0.0 0.0 0.0</pose>
+      </include>
     </model>
 
     <!-- MISSION 2 -->
-
     <model name="room1_dish">
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>4.0 18.0 0.2 0 0 0</pose>
+        <pose>-5.0 19.0 0.2 0 0 3.14159</pose>
       </include>
     </model>  
 
     <model name="room1_food">
       <include>
-        <uri>model://BananaGood</uri>
+        <uri>model://BananaBad</uri>
         <static>true</static>
-        <pose>4.0 18.0 0.25 0 0 0</pose>
+        <pose>-5.0 19.0 0.25 0 0 3.14159</pose>
       </include>
     </model>    
 
@@ -167,15 +175,15 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>-8.0 15.0 0.6 0 0 0</pose>
+        <pose>9.0 13.0 0.25 0 0 1.5708</pose>
       </include>
     </model>  
 
     <model name="room2_food">
       <include>
-        <uri>model://PizzaBad</uri>
+        <uri>model://BananaGood</uri>
         <static>true</static>
-        <pose>-8.0 15.0 0.65 0 0 0</pose>
+        <pose>9.0 13.0 0.30 0 0 1.5708</pose>
       </include>
     </model>
 
@@ -183,15 +191,15 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>-12.0 10.0 0.4 0 0 0</pose>
+        <pose>10.75 10.25 0.3 0 0 0</pose>
       </include>
     </model>  
 
     <model name="room3_food">
       <include>
-        <uri>model://AppleGood</uri>
+        <uri>model://PizzaGood</uri>
         <static>true</static>
-        <pose>-12.0 10.0 0.45 0 0 0</pose>
+        <pose>10.75 10.25 0.35 0 0 0</pose>
       </include>
     </model>
 
@@ -199,15 +207,15 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>12.0 6.0 0.3 0 0 0</pose>
+        <pose>11.0 5.0 0.2 0 0 0</pose>
       </include>
     </model>  
 
     <model name="room4_food">
       <include>
-        <uri>model://PizzaGood</uri>
+        <uri>model://AppleBad</uri>
         <static>true</static>
-        <pose>12.0 6.0 0.35 0 0 0</pose>
+        <pose>11.0 5.0 0.25 0 0 0</pose>
       </include>
     </model>
 
@@ -215,15 +223,15 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>-9.0 -7.0 0.5 0 0 0</pose>
+        <pose>-9.0 -7.0 0.25 0 0 0</pose>
       </include>
     </model>  
 
     <model name="room5_food">
       <include>
-        <uri>model://AppleBad</uri>
+        <uri>model://BananaBad</uri>
         <static>true</static>
-        <pose>-9.0 -7.0 0.55 0 0 0</pose>
+        <pose>-9.0 -7.0 0.30 0 0 0</pose>
       </include>
     </model>
     
@@ -231,15 +239,15 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>11.0 -20.0 0.2 0 0 0</pose>
+        <pose>10.0 -23.0 0.3 0 0 0</pose>
       </include>
     </model>  
 
     <model name="room6_food">
       <include>
-        <uri>model://BananaGood</uri>
+        <uri>model://PizzaBad</uri>
         <static>true</static>
-        <pose>11.0 -20.0 0.25 0 0 0</pose>
+        <pose>10.0 -23.0 0.35 0 0 0</pose>
       </include>
     </model>
 
@@ -247,15 +255,15 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>-7.0 -28.0 0.1 0 0 0</pose>
+        <pose>-9.0 -30.0 0.2 0 0 0</pose>
       </include>
     </model>  
 
     <model name="room7_food">
       <include>
-        <uri>model://AppleBad</uri>
+        <uri>model://AppleGood</uri>
         <static>true</static>
-        <pose>-7.0 -28.0 0.15 0 0 0</pose>
+        <pose>-9.0 -30.0 0.25 0 0 0</pose>
       </include>
     </model>  
 
@@ -263,15 +271,15 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>-1.0 -1.0 0.4 0 0 0</pose>
+        <pose>0.5 -2.5 0.25 0 0 0</pose>
       </include>
     </model>  
 
     <model name="room8_food">
       <include>
-        <uri>model://PizzaBad</uri>
+        <uri>model://AppleBad</uri>
         <static>true</static>
-        <pose>-1.0 -1.0 0.45 0 0 0</pose>
+        <pose>0.5 -2.5 0.30 0 0 0</pose>
       </include>
     </model> 
 
@@ -279,15 +287,15 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>2.0 -11.0 0.3 0 0 0</pose>
+        <pose>-2.0 -11.0 0.3 0 0 0</pose>
       </include>
     </model>  
 
     <model name="room9_food">
       <include>
-        <uri>model://BananaBad</uri>
+        <uri>model://PizzaGood</uri>
         <static>true</static>
-        <pose>2.0 -11.0 0.35 0 0 0</pose>
+        <pose>-2.0 -11.0 0.35 0 0 0</pose>
       </include>
     </model> 
 
@@ -295,7 +303,7 @@
       <include>
         <uri>model://WhiteDish</uri>
         <static>true</static>
-        <pose>2.0 -17.0 0.50 0 0 0</pose>
+        <pose>1.0 -18.0 0.2 0 0 0</pose>
       </include>
     </model>  
 
@@ -303,9 +311,9 @@
       <include>
         <uri>model://AppleGood</uri>
         <static>true</static>
-        <pose>2.0 -17.0 0.55 0 0 0</pose>
+        <pose>1.0 -18.0 0.25 0 0 0</pose>
       </include>
-    </model>                                   
+    </model>      
 
     <!-- DEFAULT ENVIRONMENT ASSETS -->
     <!-- DEFAULT ENVIRONMENT ASSETS -->
@@ -465,13 +473,7 @@
         <pose>-9.61916 -12.5112 0 0 0 -3.12353</pose>
       </include>
     </model>
-    <model name="Scrubs_2">
-      <include>
-        <uri>model://Scrubs</uri>
-        <static>true</static>
-        <pose>-10.0 -26.5 0.0 0.0 0.0 0.0</pose>
-      </include>
-    </model>
+
     <model name="WhiteChipChair_1">
       <include>
         <uri>model://WhiteChipChair</uri>

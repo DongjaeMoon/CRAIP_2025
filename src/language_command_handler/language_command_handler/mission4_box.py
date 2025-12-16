@@ -8,11 +8,7 @@ import sys
 import rclpy
 from rclpy.node import Node
 
-# [중요] Twist 메시지 필요
 from geometry_msgs.msg import PoseStamped, Twist
-from std_msgs.msg import String, Float32MultiArray
-
-from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String, Float32MultiArray
 
 # =========================
@@ -20,14 +16,14 @@ from std_msgs.msg import String, Float32MultiArray
 # =========================
 GOAL_X = 0.0
 GOAL_Y = 12.0
-STOP_BEFORE_GOAL = 0.42
+STOP_BEFORE_GOAL = 0.5
 
 # =========================
 # BOX CANDIDATES
 # =========================
 BOX_CANDIDATES: List[Dict[str, float]] = [
     {"name": "cand2", "box_x": 2.75, "box_y": 12.2},
-    {"name": "cand1", "box_x": 0.0, "box_y": 13.0},
+    {"name": "cand1", "box_x": 0.14, "box_y": 14.2},  # fallback 대상
     {"name": "cand3", "box_x": -2.75, "box_y": 12.2},
 ]
 
@@ -49,12 +45,261 @@ MIN_HITS = 2
 # =========================
 # Navigation Constants
 # =========================
-STEP_TIMEOUT = 60.0
-SETTLE_TIME = 0.7
+STEP_TIMEOUT = 70
+SETTLE_TIME = 0.9
+GOAL_RADIUS = 0.3
+GOAL_YAW_TOLERANCE = 0.1
+
+# =========================
+# Geometry
+# =========================
+OBS_OFFSET = 1.75
+PRE_OFFSET = 0.75
+
+TOPIC_LOCAL_POSE = "/go1_pose"
+
+
+def yaw_to_quaternion(yaw: float):
+    return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+
+
+def quaternion_to_yaw(q) -> float:
+    siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def normalize_angle(angle):
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
+
+
+class Mission4Box(Node):
+    def __init__(self):
+        super().__init__("mission4_box")
+
+        self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+
+        self.pose_sub = self.create_subscription(PoseStamped, TOPIC_LOCAL_POSE, self.pose_cb, 10)
+        self.labels_sub = self.create_subscription(String, TOPIC_LABELS, self.labels_cb, 10)
+        self.dists_sub = self.create_subscription(Float32MultiArray, TOPIC_DISTS, self.dists_cb, 10)
+
+        self.cur_x = None
+        self.cur_y = None
+        self.cur_yaw = None
+
+        self.goal_x = None
+        self.goal_y = None
+        self.goal_yaw = None
+
+        self.last_labels = []
+        self.last_dists = []
+
+        self.mission_thread = threading.Thread(target=self.mission_logic)
+        self.mission_thread.start()
+
+        self.get_logger().info("Mission4Box started.")
+
+    # =========================
+    # Callbacks
+    # =========================
+    def pose_cb(self, msg):
+        self.cur_x = msg.pose.position.x
+        self.cur_y = msg.pose.position.y
+        self.cur_yaw = quaternion_to_yaw(msg.pose.orientation)
+
+    def labels_cb(self, msg):
+        s = msg.data.strip()
+        self.last_labels = [] if not s or s == "None" else s.split(",")
+
+    def dists_cb(self, msg):
+        self.last_dists = list(msg.data)
+
+    # =========================
+    # Helpers
+    # =========================
+    def publish_goal(self, x, y, yaw):
+        g = PoseStamped()
+        g.header.frame_id = "map"
+        g.header.stamp = self.get_clock().now().to_msg()
+        g.pose.position.x = x
+        g.pose.position.y = y
+        qx, qy, qz, qw = yaw_to_quaternion(yaw)
+        g.pose.orientation.x = qx
+        g.pose.orientation.y = qy
+        g.pose.orientation.z = qz
+        g.pose.orientation.w = qw
+
+        self.goal_x = x
+        self.goal_y = y
+        self.goal_yaw = yaw
+
+        self.goal_pub.publish(g)
+        self.get_logger().info(f"PUB GOAL: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}")
+
+    def check_reached(self):
+        if self.cur_x is None:
+            return False
+        dist = math.hypot(self.goal_x - self.cur_x, self.goal_y - self.cur_y)
+        yaw_err = abs(normalize_angle(self.goal_yaw - self.cur_yaw))
+        return dist <= GOAL_RADIUS and yaw_err <= GOAL_YAW_TOLERANCE
+
+    def wait_goal(self):
+        t0 = time.time()
+        while time.time() - t0 < STEP_TIMEOUT:
+            if self.check_reached():
+                return True
+            time.sleep(0.1)
+        return False
+
+    def box_present_check(self):
+        hits = 0
+        for _ in range(SAMPLES):
+            for l, d in zip(self.last_labels, self.last_dists):
+                if l == BOX_LABEL and d <= DIST_MAX:
+                    hits += 1
+                    break
+            time.sleep(SAMPLE_INTERVAL)
+        return hits >= MIN_HITS
+
+    def yaw_box_to_goal(self, bx, by):
+        return math.atan2(GOAL_Y - by, GOAL_X - bx)
+
+    def obs_pose(self, bx, by, yaw):
+        return bx - math.cos(yaw) * OBS_OFFSET, by - math.sin(yaw) * OBS_OFFSET, yaw
+
+    def pre_pose(self, bx, by, yaw):
+        return bx - math.cos(yaw) * PRE_OFFSET, by - math.sin(yaw) * PRE_OFFSET, yaw
+
+    def push_pose(self, yaw):
+        return GOAL_X - math.cos(yaw) * STOP_BEFORE_GOAL, GOAL_Y - math.sin(yaw) * STOP_BEFORE_GOAL, yaw
+
+    # =========================
+    # Mission Logic
+    # =========================
+    def mission_logic(self):
+        time.sleep(1.0)
+
+        found_box = False
+        fallback_cand = next(c for c in BOX_CANDIDATES if c["name"] == "cand1")
+
+        for cand in BOX_CANDIDATES:
+            self.get_logger().info(f"=== Candidate: {cand['name']} ===")
+
+            yaw = self.yaw_box_to_goal(cand["box_x"], cand["box_y"])
+
+            self.publish_goal(*self.obs_pose(cand["box_x"], cand["box_y"], yaw))
+            if not self.wait_goal():
+                continue
+            time.sleep(SETTLE_TIME)
+
+            if not self.box_present_check():
+                continue
+
+            found_box = True
+            self.get_logger().info("BOX CONFIRMED")
+
+            self.publish_goal(*self.pre_pose(cand["box_x"], cand["box_y"], yaw))
+            self.wait_goal()
+            time.sleep(SETTLE_TIME)
+
+            self.publish_goal(*self.push_pose(yaw))
+            self.wait_goal()
+
+            break
+
+        # =========================
+        # 🔴 FALLBACK: 무조건 cand1
+        # =========================
+        if not found_box:
+            self.get_logger().warn("NO BOX DETECTED → FALLBACK TO cand1")
+
+            bx, by = fallback_cand["box_x"], fallback_cand["box_y"]
+            yaw = self.yaw_box_to_goal(bx, by)
+
+            self.publish_goal(*self.pre_pose(bx, by, yaw))
+            self.wait_goal()
+            time.sleep(SETTLE_TIME)
+
+            self.publish_goal(*self.push_pose(yaw))
+            self.wait_goal()
+
+        self.get_logger().info("MISSION COMPLETE")
+        self.cmd_pub.publish(Twist())
+        rclpy.shutdown()
+        sys.exit(0)
+
+
+def main():
+    rclpy.init()
+    node = Mission4Box()
+    rclpy.spin(node)
+
+
+if __name__ == '__main__':
+    main()
+
+'''#!/usr/bin/env python3
+import math
+import time
+import threading
+from typing import Optional, Dict, List
+import sys
+
+import rclpy
+from rclpy.node import Node
+
+# [중요] Twist 메시지 필요
+from geometry_msgs.msg import PoseStamped, Twist
+from std_msgs.msg import String, Float32MultiArray
+
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import String, Float32MultiArray
+
+# =========================
+# FIXED GOAL (map frame)
+# =========================
+GOAL_X = 0.0
+GOAL_Y = 12.0
+STOP_BEFORE_GOAL = 0.38
+
+# =========================
+# BOX CANDIDATES
+# =========================
+BOX_CANDIDATES: List[Dict[str, float]] = [
+    {"name": "cand2", "box_x": 2.75, "box_y": 12.2},
+    {"name": "cand1", "box_x": 0.14, "box_y": 14.45},
+    {"name": "cand3", "box_x": -2.75, "box_y": 12.2},
+]
+
+# =========================
+# Perception
+# =========================
+TOPIC_LABELS = "/detections/labels"
+TOPIC_DISTS  = "/detections/distances"
+BOX_LABEL = "box"
+DIST_MAX = 3.0
+
+# =========================
+# Sampling
+# =========================
+SAMPLES = 10
+SAMPLE_INTERVAL = 0.08
+MIN_HITS = 2
+
+# =========================
+# Navigation Constants
+# =========================
+STEP_TIMEOUT = 100.0
+SETTLE_TIME = 0.9
 
 # [수정] 도달 판정 기준 강화
 GOAL_RADIUS = 0.3       # 1.0m는 너무 커서 0.3m로 줄임 (상황에 맞게 조정)
-GOAL_YAW_TOLERANCE = 0.15  # 약 8.5도 오차 허용 (rad)
+GOAL_YAW_TOLERANCE = 0.1  # 약 8.5도 오차 허용 (rad)
 
 # =========================
 # Geometry
@@ -334,4 +579,4 @@ def main(args=None):
             rclpy.shutdown()
 
 if __name__ == '__main__':
-    main()
+    main()'''

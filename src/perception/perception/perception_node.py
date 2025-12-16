@@ -92,7 +92,7 @@ class PerceptionNode(Node):
             return
 
         h, w, _ = frame.shape
-        results = self.model(frame, verbose=False)
+        results = self.model(frame, 0.4, verbose=False)
 
         speech_cmd = "None"
         candidates = []   # (sort_dist, label, dist_m)

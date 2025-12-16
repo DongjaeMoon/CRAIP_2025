@@ -18,8 +18,8 @@ APPROACH_Y = -26.0
 APPROACH_YAW = -3.0
 
 # 2. 미션 파라미터
-TARGET_DIST = 0.9     # 간호사 앞 0.9m 까지 접근
-HEX_SIDE_LEN = 1.0    # 육각형 한 변의 길이 (1m)
+TARGET_DIST = 0.85     # 간호사 앞 0.9m 까지 접근
+HEX_SIDE_LEN = 0.92    # 육각형 한 변의 길이 (1m)
 TARGET_LABEL = "nurse"
 
 # 3. 카메라 파라미터
@@ -283,7 +283,7 @@ class Mission6Nurse(Node):
                 while diff < -math.pi: diff += 2*math.pi
                 
                 # 우회전 60도 (-0.4)
-                if abs(diff) >= math.radians(60):
+                if abs(diff) >= math.radians(58):
                     self.stop()
                     self.hex_state = "MOVE_STRAIGHT"
                     self.start_check = False
