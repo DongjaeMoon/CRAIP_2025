@@ -14,6 +14,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan
@@ -52,10 +53,12 @@ class GlobalLocalizerNode(Node):
         self.get_logger().info("Global localizer node (PF + map + LiDAR) initialized")
 
         # --- Simulation time (/clock) ---
-        self.clock_sub = self.create_subscription(
-            Clock, "/clock", self.clock_callback, 10
-        )
-        self.current_time: Time | None = None
+        # qos_profile = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+
+        # self.clock_sub = self.create_subscription(
+        #     Clock, "/clock", self.clock_callback, qos_profile
+        # )
+        # self.current_time: Time | None = None
 
         # --- TF buffer/listener ---
         self.tf_buffer = tf2_ros.Buffer()
@@ -94,7 +97,7 @@ class GlobalLocalizerNode(Node):
         self.init_y = float(self.get_parameter("y").value)
         self.init_yaw = float(self.get_parameter("yaw").value)
 
-        self.z = 0.33  # robot base height
+        self.z = 0.5  # robot base height
         q_init = tf_transformations.quaternion_from_euler(0.0, 0.0, self.init_yaw)
         self.T_map_to_base_init = pose_to_matrix(
             [self.init_x, self.init_y, self.z, q_init[0], q_init[1], q_init[2], q_init[3]]
@@ -134,8 +137,8 @@ class GlobalLocalizerNode(Node):
     # Callbacks
     # =========================================================
 
-    def clock_callback(self, msg: Clock):
-        self.current_time = Time.from_msg(msg.clock)
+    # def clock_callback(self, msg: Clock):
+    #     self.current_time = Time.from_msg(msg.clock)
 
     def map_callback(self, msg: OccupancyGrid):
         """
@@ -173,8 +176,6 @@ class GlobalLocalizerNode(Node):
         """
         Particle Filter iteration triggered by each LaserScan
         """
-        if self.current_time is None:
-            return
         if self.map_msg is None:
             return
         
@@ -260,8 +261,7 @@ class GlobalLocalizerNode(Node):
         """
         Periodically publish map->odom TF
         """
-        if self.current_time is None:
-            return
+        current_time = self.get_clock().now()
         if self.T_map_to_odom is None:
             return
 
@@ -269,7 +269,7 @@ class GlobalLocalizerNode(Node):
         quaternion = tf_transformations.quaternion_from_matrix(self.T_map_to_odom)
 
         tf_msg = TransformStamped()
-        tf_msg.header.stamp = self.current_time.to_msg()
+        tf_msg.header.stamp = current_time.to_msg()
         tf_msg.header.frame_id = "map"
         tf_msg.child_frame_id = "odom"
         tf_msg.transform.translation.x = float(translation[0])
@@ -502,7 +502,7 @@ class GlobalLocalizerNode(Node):
         T[1, 1] = c
         T[0, 3] = x
         T[1, 3] = y
-        T[2, 3] = 0.33  # robot base height
+        T[2, 3] = 0.5  # robot base height
         return T
 
     @staticmethod

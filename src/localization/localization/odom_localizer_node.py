@@ -40,6 +40,7 @@ from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import Imu, LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
 from geometry_msgs.msg import TransformStamped
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 import tf_transformations
 import tf2_ros
@@ -63,10 +64,11 @@ class OdomLocalizerNode(Node):
         self.get_logger().info("Odom localizer node (EKF + IMU + scan-to-scan ICP) initialized")
 
         # --- Simulation time (/clock) ---
-        self.clock_sub = self.create_subscription(
-            Clock, "/clock", self.clock_callback, 10
-        )
-        self.current_time: Time | None = None
+        # qos_profile = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        # self.clock_sub = self.create_subscription(
+        #     Clock, "/clock", self.clock_callback, qos_profile
+        # )
+        # self.current_time: Time | None = None
 
         # --- TF buffer/listener for odom, base, laser frames ---
         self.tf_buffer = tf2_ros.Buffer()
@@ -133,8 +135,8 @@ class OdomLocalizerNode(Node):
     # Callbacks
     # =========================================================
 
-    def clock_callback(self, msg: Clock):
-        self.current_time = Time.from_msg(msg.clock)
+    # def clock_callback(self, msg: Clock):
+    #     self.current_time = Time.from_msg(msg.clock)
 
     def imu_callback(self, msg: Imu):
         """
@@ -230,8 +232,6 @@ class OdomLocalizerNode(Node):
             - Use this pose as a measurement z = [x_icp, y_icp, yaw_icp] for EKF.
         """
         if not self.initialized:
-            return
-        if self.current_time is None:
             return
 
         t_scan = Time.from_msg(scan.header.stamp)
@@ -443,15 +443,15 @@ class OdomLocalizerNode(Node):
     def publish_odom_tf_and_msg(self):
         if not self.initialized:
             return
-        if self.current_time is None:
-            return
 
         x, y, yaw, _, _ = self.x.flatten()
+        current_time = self.get_clock().now()
 
         # TF: odom -> base
         quat = tf_transformations.quaternion_from_euler(0.0, 0.0, yaw)
+        #self.get_logger().info(f'current time: {current_time}')
         tf_msg = TransformStamped()
-        tf_msg.header.stamp = self.current_time.to_msg()
+        tf_msg.header.stamp = current_time.to_msg()
         tf_msg.header.frame_id = "odom"
         tf_msg.child_frame_id = "base"
         tf_msg.transform.translation.x = float(x)
