@@ -1,7 +1,7 @@
 # 📢 Project Information
 * **Course:** SNU "How to make a robot with AI" (2025) - Final Project
-* **Designed by:** Faculty & TAs
-* **Developed by:** Seungmin Choi (Lead), Yunseo Oh, Youngjun Lee, Dongjae Moon (Me)
+* **Designed by:** Faculty & [TA roy](https://github.com/roy9852), [TA minho](https://github.com/Taekmino)
+* **Developed by:** [Seungmin Choi](https://github.com/gs18113) (Lead), [Yunseo Oh](https://github.com/yunseo30), [Youngjun Lee](https://github.com/krkr1203-cmyk), [Dongjae Moon](https://github.com/DongjaeMoon) (Me)
 
 
 # Creating Robot Artificial Intelligence Project (CRAIP)
