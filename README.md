@@ -1,8 +1,7 @@
----
-### 📢 Note
-CRAIP 2025 is the final project of the SNU course "How to make a robot with AI" 
-Designed by: Faculty & TAs
-Developed by: Seungmin Choi (Lead), Yunseo Oh, Youngjun Lee, Dongjae Moon(Me)
+# 📢 Project Information
+* **Course:** SNU "How to make a robot with AI" (2025) - Final Project
+* **Designed by:** Faculty & TAs
+* **Developed by:** Seungmin Choi (Lead), Yunseo Oh, Youngjun Lee, Dongjae Moon (Me)
 
 
 # Creating Robot Artificial Intelligence Project (CRAIP)
